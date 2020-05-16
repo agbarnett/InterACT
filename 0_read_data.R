@@ -185,6 +185,7 @@ care_directive = filter(all_data, redcap_repeat_instrument == 'care_directive_me
 
 # ii) clinicianled_review
 clinicianled_review = filter(all_data, redcap_repeat_instrument == 'clinicianled_review_discussion') %>%
+  filter(care_review==1) %>% # only where a review has occurred
   select('participant_id','hospital','redcap_version','care_review_factor','time_care_review','datediff_clinician_review',
          'care_review_type_factor','care_review_type_other','care_review_conflict_factor') %>%
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names

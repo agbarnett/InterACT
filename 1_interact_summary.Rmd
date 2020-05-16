@@ -34,7 +34,7 @@ st_options(plain.ascii = FALSE,       # Always use this option in Rmd documents
 
 # get the data
 load('data/FullData.RData') # from 0_read_data.R 
-# add the score thresholds
+# add the score thresholds (positive if on or above)
 cristal_threshold = 5
 spict_threshold = 2
 frailty_threshold = 5
@@ -65,6 +65,7 @@ These plots include patients in whom baseline data screening was not complete.
 for.missing = select(baseline, -participant_id, -hospital,  # remove variables that cannot be missing
                      -ends_with('_team'), # not in all hospitals
                      -'cristal_icu_current', -'cristal_admit_ed', # conditional
+                     -redcap_version,
                      -starts_with('time'), -starts_with('start_date_time'), -starts_with('end_date_time')) # do not bother with time variables (Secondary interest)
 vis_dat(for.missing)
 #naniar::gg_miss_upset(for.missing) # could also try this
@@ -98,7 +99,18 @@ mplot + xlab('')
 ```{r, missing.screening, fig.width=8}
 for.missing = select(complete, -participant_id, -hospital, # remove variables that cannot be missing
                      -starts_with('start_date_time'), -starts_with('end_date_time'), # not that important
+                     -redcap_version,
                      -covid19_date) # remove conditional variables
+vis_dat(for.missing)
+```
+
+### c) Clinician-led review discussion
+
+```{r, missing.review, fig.width=8}
+for.missing = select(clinicianled_review, -participant_id, -hospital, # remove variables that cannot be missing
+                     -starts_with('start_date_time'), -starts_with('end_date_time'), # not that important
+                     -redcap_version,
+                     -care_review_type_other) # remove conditional variables
 vis_dat(for.missing)
 ```
 
@@ -537,6 +549,72 @@ with(update, ctable(`CriSTAL positive`, `CriSTAL positive new`, round.digits=0, 
 ```
 
 More patients are CriSTAL-positive with the extra point on the clinical frailty score.
+
+# Clinician-led review discussion
+
+### Type of clinician-led review activity
+
+```{r, results='asis'}
+with(clinicianled_review, freq(care_review_type, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+### Difference between screening date and date of clinician-led review
+
+#### Table of difference (days)
+
+```{r, results='asis'}
+# note, convert time to negative
+with(clinicianled_review, descr(-datediff_clinician_review, stats=c('N.Valid','min','Q1','med','Q3','max'), round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+#### Histogram of difference
+
+```{r}
+hplot = ggplot(data=clinicianled_review, aes(x=-datediff_clinician_review))+
+  geom_histogram(fill = "#CDAD00")+
+  xlab('Days between screening and clinician-led review')+
+  g.theme
+hplot
+```
+
+### Was there any documentation of family conflict?
+
+```{r, results='asis'}
+with(clinicianled_review, freq(care_review_conflict, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+# Care directive measure
+
+### Has there been a review of any care directives?
+
+```{r, results='asis'}
+with(care_directive, freq(change_5, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+### Difference between screening date and initiation of care directive measure
+
+#### Table of difference
+
+```{r, results='asis'}
+# note, convert time to negative
+with(care_directive, descr(-datediff_care_directive, stats=c('N.Valid','min','Q1','med','Q3','max'), round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+#### Histogram of difference
+
+```{r}
+hplot = ggplot(data=care_directive, aes(x=-datediff_care_directive))+
+  geom_histogram(fill = "turquoise4")+
+  xlab('Days between screening and initiation of care directive measure')+
+  g.theme
+hplot
+```
+
+
+# Palliative care referral
+
+_Waiting on data_
+
 
 # Appendices
 
