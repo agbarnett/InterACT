@@ -48,7 +48,6 @@ cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00",
 # TO DO:
 # colour upset_plots according to positive, or split one for screened and one for cristal/spict positive
 # show missing data by screening complete or not
-#TO DO: exclude conditional variables. Or separate plots. for missing
 ```
 
 This report shows the summary statistics and analysis for the InterACT study. The code is available on [GitHub](https://github.com/agbarnett/InterACT).
@@ -301,7 +300,7 @@ spict = select(baseline, "participant_id", 'hospital', spict.vars) %>%
   mutate(SPICT = nice.rename.spict(SPICT)) # neaten variable
 with(spict, 
      stby(list(x = SPICT, Y = Response), 
-          INDICES = hospital, FUN = ctable, round.digits=0, useNA='no', dnn=c('SPICT Variable','')))
+          INDICES = hospital, FUN = ctable, totals=FALSE, round.digits=0, useNA='no', dnn=c('SPICT Variable','')))
 ```
 
 
@@ -436,7 +435,7 @@ cristal = select(baseline, "participant_id", 'hospital', cristal.vars) %>%
 # 
 with(cristal, 
      stby(list(x = CRISTAL, y = Response), 
-          INDICES = hospital, FUN = ctable, round.digits=0, useNA='no', dnn=c('CriSTAL Variable','')))
+          INDICES = hospital, FUN = ctable,  totals=FALSE, round.digits=0, useNA='no', dnn=c('CriSTAL Variable',''))) # no totals, get a bit confusing because of multiple variables
 ```
 
 ### CriSTAL score by hospital
@@ -610,6 +609,39 @@ hplot = ggplot(data=care_directive, aes(x=-datediff_care_directive))+
 hplot
 ```
 
+### Have any of the following outcomes occurred?
+
+##### Table 
+
+```{r, results='asis'}
+to.table = filter(care_directive, change_5 =='Yes') %>%
+  select(participant_id, starts_with('type_care_')) %>%
+  tidyr::gather(key='num', value='checked', -participant_id) %>%
+  mutate(nicevar = nice.rename.directive(num),
+         num = as.numeric(str_remove_all(num, '[^0-9]')),
+         numf = factor(num, levels=1:8, labels=care_directives), 
+         checked = factor(checked, levels=c('Checked','Unchecked'), labels=c('Yes','No')))
+with(to.table, ctable(nicevar, checked, dnn=c(' ',''), round.digits=0, totals=FALSE, useNA='no'))
+```
+
+##### Bar plot
+
+```{r, fig.width=8}
+stack = ggplot(data=to.table, aes(x=numf, fill=checked))+
+  geom_bar(position='stack')+
+  g.theme+
+  scale_fill_manual(NULL, values=c("#00BFFF", "#4EEE94", "#FFFFFF"))+
+  coord_flip()+
+  xlab('')
+stack
+```
+
+### Have the completed document/s been uploaded to 'tracker'?
+
+```{r, results='asis'}
+to.table = filter(care_directive, change_5 =='Yes')
+with(to.table, freq(tracker, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
 
 # Palliative care referral
 

@@ -37,3 +37,24 @@ nice.rename.cristal = function(x){
   )
   return(y)  
 }
+
+# rename for care directive
+nice.rename.directive = function(x){
+  y = case_when(
+    x == 'type_care_directive_1' ~	'Active treatment reduced or ceased',
+    x == 'type_care_directive_2' ~	'Active treatment continued',
+    x == 'type_care_directive_3' ~	'Active treatment increased',
+    x == 'type_care_directive_4' ~	'Comfort care initiated or increased',
+    x == 'type_care_directive_5' ~	'Resuscitation plan completed or updated',
+    x == 'type_care_directive_6' ~	'Advance Care Plan completed or initiated',
+    x == 'type_care_directive_7' ~	'Statement of choices completed or initiated',
+    x == 'type_care_directive_8' ~	'Other'
+  )
+  return(y)  
+}
+
+# list of names in order (used to arrange results on geom_bar)
+care_directives = c('Active treatment reduced or ceased', 'Active treatment continued', 
+'Active treatment increased', 'Comfort care initiated or increased', 
+'Resuscitation plan completed or updated', 'Advance Care Plan completed or initiated', 
+'Statement of choices completed or initiated', 'Other')

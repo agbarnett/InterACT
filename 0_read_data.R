@@ -155,7 +155,7 @@ baseline = mutate(baseline,
                   )
 # quick checks of times - could just be data issue (longer than 120 minutes or negative time)
 problems = select(baseline, "participant_id",'hospital', starts_with('time_')) %>%
-  tidyr::gather(value='minutes', key='timevar', -"participant_id", -"hospital") %>%
+  tidyr::gather(value='minutes', key='form', -"participant_id", -"hospital") %>%
   filter(minutes<0 | minutes>120) %>%
   left_join(baseline, by=c("participant_id",'hospital')) %>%
   mutate(start = NA,
@@ -166,34 +166,45 @@ problems = select(baseline, "participant_id",'hospital', starts_with('time_')) %
          end = ifelse(minutes == time_hosp, end_date_time_hosp, end),
          end = ifelse(minutes == time_dem, end_date_time_dem, end),
          end = ifelse(minutes == time_funct, end_date_time_funct, end)) %>%
-  select("participant_id",'hospital', 'timevar', 'minutes', 'start', 'end') %>%
+  select("participant_id",'hospital', 'form', 'minutes', 'start', 'end') %>%
   mutate(start = as.POSIXct(as.numeric(start), origin='1970-01-01'), # need to convert to dates and times
-         end = as.POSIXct(as.numeric(end), origin='1970-01-01'))
+         end = as.POSIXct(as.numeric(end), origin='1970-01-01'),
+         form = case_when(form=='time_hosp' ~ 'Hospital admissions',
+                          form=='time_dem' ~ 'Patient demographics',
+                          form=='time_funct' ~ 'Functional status',
+                          form=='time_comorb' ~ 'Comorbidities',
+                          form=='time_4' ~ 'Clinician-led review discussion',
+                          form=='time_5' ~ 'Care directive measure',
+                          form=='time_6' ~ 'Palliative care referral',
+                          form=='time_dcharg' ~ 'Screening completion'))
 if(nrow(problems)>0){
   write.csv(problems, file='checks/date_checks.csv', quote=FALSE, row.names = FALSE)
 }
 
 ## b) follow-up
-# i) care directive
+# i) clinicianled_review
+clinicianled_review = filter(all_data, redcap_repeat_instrument == 'clinicianled_review_discussion') %>%
+  filter(care_review==1) %>% # only where a review has occurred
+  select('participant_id','hospital','redcap_version','start_date_time_4',
+         'care_review_factor','time_care_review','datediff_clinician_review',
+         'care_review_type_factor','care_review_type_other','care_review_conflict_factor') %>%
+  rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
+
+# ii) care directive
 care_directive = filter(all_data, redcap_repeat_instrument == 'care_directive_measure') %>%
-  select('participant_id','hospital','redcap_version','change_5_factor','date_time_5','datediff_care_directive',
+  select('participant_id','hospital','redcap_version','change_5_factor',
+         'start_date_time_5','date_time_5','datediff_care_directive',
          "type_care_directive_1_factor", "type_care_directive_2_factor",
          "type_care_directive_3_factor", "type_care_directive_4_factor", "type_care_directive_5_factor",
          "type_care_directive_6_factor", "type_care_directive_7_factor", "type_care_directive_8_factor",
          'care_directive_other','tracker_factor') %>%
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
 
-# ii) clinicianled_review
-clinicianled_review = filter(all_data, redcap_repeat_instrument == 'clinicianled_review_discussion') %>%
-  filter(care_review==1) %>% # only where a review has occurred
-  select('participant_id','hospital','redcap_version','care_review_factor','time_care_review','datediff_clinician_review',
-         'care_review_type_factor','care_review_type_other','care_review_conflict_factor') %>%
-  rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
-
 # iii) palliative_care_referral
 temporary = function(){ # not yet in data
 palliative_care_referral = filter(all_data, redcap_repeat_instrument == 'palliative_care_referral') %>%
-  select('participant_id','hospital','redcap_version','pall_care_6_factor','pall_date_6','datediff_pallcare','palliative_care_referral_complete') %>%
+  select('participant_id','hospital','redcap_version','start_date_time_6',
+         'pall_care_6_factor','pall_date_6','datediff_pallcare','palliative_care_referral_complete') %>%
   rename('pall_care' ='pall_care_6_factor',
          'pall_date' = 'pall_date_6')
 }
