@@ -1,13 +1,13 @@
 # 99_functions.R
 # helpful functions for InterACT
-# May 2020
+# June 2020
 
 # rename for SPICT variables
 nice.rename.spict = function(x){
 y = case_when(
   x == 'spict_unplan_hosp' ~ 'Unplanned hospital',
-  x == 'spict_perform_status' ~ 'Performance poor',
-  x == 'spict_care_others' ~ 'Depends on others',
+  x == 'spict_perform_status' ~ 'Performance poor status',
+  x == 'spict_care_others' ~ 'Depends on others for care',
   x == 'spict_weight_loss' ~ 'Weight loss',
   x == 'spict_persist_sympt' ~ 'Persistent symptoms',
   x == 'spict_care_focus' ~ 'Palliative care request'
@@ -23,7 +23,9 @@ nice.rename.cristal = function(x){
     x == 'age' ~ 'Age',
     x == 'cristal_previous_admit' ~ 'Previous hospitalisation',
     x == 'cristal_icu' ~ 'ICU admission',
-    x == 'cristal_cfs_score' ~ 'Frailty score >= 6', ## need to refine this for two thresholds
+    x == 'cristal_cfs_score' ~ 'Frailty score', ## overall CFS score
+    x == 'cristal_cfs_score1' ~ 'Frailty score >= 5', ## lower threshold
+    x == 'cristal_cfs_score2' ~ 'Frailty score >= 7', ## upper threshold
     x == "cristal_cancer" ~ 'Advanced cancer',
     x == "cristal_proteinuria"  ~ 'Proteinuria',
     x == "cristal_ckd"  ~ 'Chronic kidney disease',
@@ -33,7 +35,48 @@ nice.rename.cristal = function(x){
     x == "cristal_copd" ~ 'COPD',
     x == "cristal_stroke" ~ 'Stroke',
     x == "cristal_cognitive" ~ 'Cognitive impairment',     
-    x == "cristal_liver" ~ 'Liver disease'
+    x == "cristal_liver" ~ 'Liver disease',
+    x == "cristal_gcs" ~ 'Glasgow Coma Scale',
+    x == "cristal_sbp" ~ 'Systolic blood pressure',
+    x == "cristal_resp" ~ 'Respiratory rate',
+    x == "cristal_hr" ~ 'Pulse rate',
+    x == "cristal_02" ~ 'Oxygen required or saturation < 90%',
+    x == "cristal_bgl" ~ 'Hypoglycaemia',
+    x == "cristal_seizures" ~ 'Seizures',
+    x == "cristal_urine" ~ 'Low urine output'
+  )
+  return(y)  
+}
+
+# rename for CRISTAL variables using acronyms
+nice.rename.cristal.acronyms = function(x){
+  y = case_when(
+    x == 'cristal_admit_ed' ~ 'Admitted via ED',
+    x == 'cristal_admit_source' ~ 'From nursing home',
+    x == 'age' ~ 'Age',
+    x == 'cristal_previous_admit' ~ 'Previous hospitalisation',
+    x == 'cristal_icu' ~ 'ICU admission',
+    x == 'cristal_cfs_score' ~ 'Frailty score', ## overall CFS score
+    x == 'cristal_cfs_score1' ~ 'Frailty score >= 5', ## lower threshold
+    x == 'cristal_cfs_score2' ~ 'Frailty score >= 7', ## upper threshold
+    x == "cristal_cancer" ~ 'Advanced cancer',
+    x == "cristal_proteinuria"  ~ 'Proteinuria',
+    x == "cristal_ckd"  ~ 'CKD', # acronym
+    x == "cristal_ecg" ~ 'Abnormal ECG',
+    x == "cristal_ami" ~ 'AMI', # acronym
+    x == "cristal_chf"  ~ 'CHF', # acronym
+    x == "cristal_copd" ~ 'COPD',
+    x == "cristal_stroke" ~ 'Stroke',
+    x == "cristal_cognitive" ~ 'Cognitive impairment',     
+    x == "cristal_liver" ~ 'Liver disease',
+    x == "cristal_gcs" ~ 'GCS', # acronym
+    x == "cristal_sbp" ~ 'SBP', # acronym
+    x == "cristal_resp" ~ 'Respiratory rate',
+    x == "cristal_hr" ~ 'Pulse rate',
+    x == "cristal_02" ~ 'O2 required or saturation < 90%',
+    x == "cristal_bgl" ~ 'Hypoglycaemia',
+    x == "cristal_seizures" ~ 'Seizures',
+    x == "cristal_urine" ~ 'Low urine output'
   )
   return(y)  
 }

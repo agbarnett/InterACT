@@ -1,7 +1,7 @@
 # 0_read_data.R
 # read the data from redcap using the export function from REDCap
-# Use both versions of REDCAP databases
-# May 2020
+# Use all three versions of REDCAP databases
+# June 2020
 library(readxl)
 library(tidyr)
 library(dplyr)
@@ -31,8 +31,9 @@ tpch = sum(str_count(d, 'TPCH'))
 all_data = NULL
 for (this in d){
   source(this) # source the R file exported by REDCap
-  hosp =  str_remove_all(this, 'V2|_R|_|[0-9]|InterACT|\\.r|-') # extract hospital name from file name
+  hosp =  str_remove_all(this, 'V3|V2|_R|_|[0-9]|InterACT|\\.r|-') # extract hospital name from file name
   version = ifelse(str_detect(this, 'V2')==TRUE, 2, 1)
+  version = ifelse(str_detect(this, 'V3')==TRUE, 3, version)
   data = clean_names(data) %>%
     mutate(hospital = hosp,
            redcap_version = version) %>%
@@ -43,9 +44,10 @@ setwd('..') # move back
 # check forms
 table(all_data$redcap_event_name_factor)
 table(all_data$redcap_repeat_instrument)
+table(all_data$redcap_version)
 
 ## Section 0: initial cleans ##
-# a) remove duplicate IDs
+# a) remove duplicate IDs (only in version 1 or 2)
 id.complete = read_excel('data/REDCap screening IDs.xlsx', sheet=1, skip=1) %>% # ID numbers of completed baseline screening
   gather(key='where', value='participant_id') %>%
   filter(!is.na(participant_id)) %>%  # remove missing rows
@@ -93,7 +95,7 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
          'cristal_icu_factor',
          'cristal_icu_current_factor',
          'cristal_cfs_factor',
-         'cristal_cfs_score', # 6 or above
+         'cristal_cfs_score', # 
          contains('cristal_score'), # all the scores
          'cristal_cancer_factor',
          'cristal_proteinuria_factor',
@@ -105,6 +107,14 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
          'cristal_stroke_factor',
          'cristal_cognitive_factor',
          'cristal_liver_factor',
+         "cristal_gcs_factor",
+         "cristal_sbp_factor",
+         "cristal_resp_factor",
+         "cristal_hr_factor",
+         "cristal_02_factor",
+         "cristal_bgl_factor",
+         "cristal_seizures_factor",
+         "cristal_urine_factor",
          'presence_eol_plan_factor','eol_plan_name') %>%
   # admission time and date:
   mutate(hour = as.numeric(str_sub(admission_date, 12, 13)), # extract from text
@@ -201,13 +211,13 @@ care_directive = filter(all_data, redcap_repeat_instrument == 'care_directive_me
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
 
 # iii) palliative_care_referral
-temporary = function(){ # not yet in data
 palliative_care_referral = filter(all_data, redcap_repeat_instrument == 'palliative_care_referral') %>%
-  select('participant_id','hospital','redcap_version','start_date_time_6',
-         'pall_care_6_factor','pall_date_6','datediff_pallcare','palliative_care_referral_complete') %>%
-  rename('pall_care' ='pall_care_6_factor',
+  select('participant_id','hospital','redcap_version',
+         'start_date_time_6',
+         'pall_care_6_factor','pall_date_6','datediff_pallcare','palliative_care_referral_complete_factor') %>%
+  rename('palliative_care_referral_complete' ='palliative_care_referral_complete_factor',
+         'pall_care' ='pall_care_6_factor',
          'pall_date' = 'pall_date_6')
-}
 
 # c) complete
 complete = filter(all_data, redcap_event_name_factor == 'Study completion') %>%
@@ -238,14 +248,15 @@ cristal.vars = c('cristal_admit_ed','cristal_admit_source',
                  'cristal_previous_admit','cristal_icu',
                  'cristal_cfs_score','cristal_cancer','cristal_proteinuria',
                  'cristal_ckd','cristal_ecg','cristal_ami','cristal_chf',
-                 'cristal_copd','cristal_stroke','cristal_cognitive','cristal_liver')
+                 'cristal_copd','cristal_stroke','cristal_cognitive','cristal_liver',
+                 "cristal_gcs","cristal_sbp", "cristal_resp", "cristal_hr",
+                 "cristal_02", "cristal_bgl", "cristal_seizures", "cristal_urine")
 
 # final tidy
 baseline = select(baseline, -starts_with('start_date_time'), -starts_with('end_date_time')) # do not need these date/time variables
 
 # save
-# to add once available: palliative_care_referral
-save(spict.vars, cristal.vars, baseline, complete, care_directive, clinicianled_review, file='data/FullData.RData')
+save(spict.vars, cristal.vars, baseline, complete, care_directive, palliative_care_referral, clinicianled_review, file='data/FullData.RData')
 
 
 # names(baseline)[grep('cristal_score', names(baseline))]

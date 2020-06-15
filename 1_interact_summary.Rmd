@@ -37,8 +37,9 @@ load('data/FullData.RData') # from 0_read_data.R
 # add the score thresholds (positive if on or above)
 cristal_threshold = 5
 spict_threshold = 2
+# these two thresholds (although 1 is unknown in REDCap, the score has been adjusted in 0_read_data)
 frailty_threshold = 5
-frailty_threshold2 = 7
+frailty_threshold2 = 7 # second threshold added in May 2020
 
 # graphics things:
 g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
@@ -117,6 +118,16 @@ vis_dat(for.missing)
 
 ```{r, fig.width=8}
 naniar::gg_miss_var(for.missing, show_pct = FALSE)
+```
+
+### d) Palliative care referral
+
+```{r, missing.pall, fig.width=8}
+for.missing = select(palliative_care_referral, -participant_id, -hospital, # remove variables that cannot be missing
+                     -starts_with('start_date_time'), -starts_with('end_date_time'), # not that important
+                     -redcap_version,
+                     -datediff_pallcare) # remove conditional variables
+vis_dat(for.missing)
 ```
 
 ## Overall numbers
@@ -377,7 +388,7 @@ The CriSTAL score has a range from 0 to ? and uses the following 16 variables:
 * Age over 75
 * Previous hospitalisation in last 12 months
 * ICU admission
-* Clinical frailty score
+* Clinical frailty score (thresholds at 5+ and 7+)
 * Advanced cancer
 * Proteinuria
 * Chronic kidney disease
@@ -427,8 +438,10 @@ The clinical frailty score is continuous, whereas the other variables are binary
 cristal = select(baseline, "participant_id", 'hospital', cristal.vars) %>%
   mutate(
     #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary , no longer using age in cristal
-         cristal_cfs_score = ifelse(cristal_cfs_score >= frailty_threshold, 'Yes', 'No') # frailty score over 5, # this transformation ignores unknown, not so bad!
+         cristal_cfs_score1 = ifelse(cristal_cfs_score >= frailty_threshold, 'Yes', 'No'), # frailty score over 5,
+         cristal_cfs_score2 = ifelse(cristal_cfs_score >= frailty_threshold2, 'Yes', 'No') # frailty score over 7,
          ) %>% 
+  select(-cristal_cfs_score) %>% # no longer need score
   mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
   tidyr::gather(key='CRISTAL', value='Response', -`participant_id`, -`hospital`) %>%
   mutate(CRISTAL = nice.rename.cristal(CRISTAL)) # neaten variable
@@ -489,7 +502,9 @@ If a CriSTAL variable is not shown, it means it was not used in any of the top t
 yes_responses <-  dplyr::select(baseline, participant_id, cristal.vars)  %>%
   mutate(
     #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary - no longer using age in cristal
-         cristal_cfs_score = ifelse(cristal_cfs_score >= frailty_threshold, 'Yes', 'No') ) %>%  # frailty score over 5
+         cristal_cfs_score1 = ifelse(cristal_cfs_score >= frailty_threshold, 'Yes', 'No'), # frailty score over 5
+         cristal_cfs_score2 = ifelse(cristal_cfs_score >= frailty_threshold2, 'Yes', 'No')) %>%  # frailty score over 7
+  select(-cristal_cfs_score) %>% # no longer needed
   mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
   as_tibble() %>%
   tidyr::gather(key='cristal', value='response', -participant_id) %>%
@@ -539,9 +554,9 @@ Here we examine if adding a second point to the total CriSTAL score for `r frail
 ```{r, results='asis'}
 update = mutate(baseline, 
                 cristal_score_new = cristal_score + as.numeric(cristal_cfs_score >= frailty_threshold2), # add one more to score for high frailty
-                `CriSTAL positive` = as.numeric(cristal_score >= frailty_threshold),
+                `CriSTAL positive` = as.numeric(cristal_score >= cristal_threshold),
                 `CriSTAL positive` = factor(`CriSTAL positive`, levels=0:1, labels=c('No','Yes')),
-                `CriSTAL positive new` = as.numeric(cristal_score_new >= 5),
+                `CriSTAL positive new` = as.numeric(cristal_score_new >= cristal_threshold),
                 `CriSTAL positive new` = factor(`CriSTAL positive new`, levels=0:1, labels=c('No','Yes'))) 
 # now cross-table by hospital
 with(update, ctable(`CriSTAL positive`, `CriSTAL positive new`, round.digits=0, useNA='no', dnn=c('Old','New')))
@@ -645,8 +660,30 @@ with(to.table, freq(tracker, round.digits=0, cumul = FALSE, report.nas =FALSE))
 
 # Palliative care referral
 
-_Waiting on data_
+### Has this patient been referred to palliative care?
 
+```{r, results='asis'}
+with(palliative_care_referral, freq(pall_care, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+### Difference between screening date and initiation of care directive measure
+
+#### Table of difference
+
+```{r, results='asis'}
+# note, convert time to negative
+with(palliative_care_referral, descr(-datediff_pallcare, stats=c('N.Valid','min','Q1','med','Q3','max'), round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+#### Histogram of difference
+
+```{r}
+hplot = ggplot(data=palliative_care_referral, aes(x=-datediff_pallcare))+
+  geom_histogram(fill = "darkorange1")+
+  xlab('Days between screening and initiation of care directive measure')+
+  g.theme
+hplot
+```
 
 # Appendices
 

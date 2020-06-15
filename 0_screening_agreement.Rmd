@@ -1,0 +1,124 @@
+---
+title: 'InterACT project: examining the inter-rater reliability in screening'
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: false
+    reference_docx: rmarkdown-styles-reference.docx
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=500)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+
+library(dplyr)
+library(tidyr)
+library(janitor)
+library(ggplot2)
+library(irrCAC)
+library(ordinal)
+
+# get the data, from an agreement exercise
+library(readxl)
+data = read_excel('data/InterACTV3IRR-BaselineScreening_V2.xlsx', sheet=2) %>%
+  select(-`REDCap ID`, -`CFS score`, -`CriSTAL 1`, -`CriSTAL 2`) %>% # remove a few variables
+  clean_names() %>%
+  filter(!is.na(auditor)) # remove missing rows
+
+# categorical and continuous variables
+cat_vars = names(select(data, -auditor, -case_study, -cfs, -"total_cri_stal", -'spict_score')) # list of all categorical variables 
+cont_vars = names(select(data, 'cfs', "total_cri_stal", 'spict_score'))
+
+# loop through categorical varables
+results =  NULL
+for (v in cat_vars){
+columns = select(data, case_study, auditor, v) %>%
+  group_by( case_study) %>%
+  spread(value=v, key=auditor) %>% # subject = rows, raters=columns
+  ungroup() %>%
+  select(-case_study)
+  # pa = pa.coeff.raw(columns) # percent agreement
+  gwet = gwet.ac1.raw(columns)$est
+  frame = data.frame(var=v, agreement = gwet$coeff.val, CI = gwet$conf.int, type=1)
+  results = bind_rows(results, frame)
+  # version with no and unknown combined
+  columns = select(data, case_study, auditor, v) %>%
+    group_by( case_study) %>%
+    mutate_if(is.character, function(x) ifelse(x=='No', 'No/Unknown', x)) %>%
+    mutate_if(is.character, function(x) ifelse(x=='Unknown', 'No/Unknown', x)) %>%
+    spread(value=v, key=auditor) %>% # subject = rows, raters=columns
+  ungroup() %>%
+  select(-case_study)
+  gwet = gwet.ac1.raw(columns)$est
+  frame = data.frame(var=v, agreement = gwet$coeff.val, CI = gwet$conf.int, type=2)
+  results = bind_rows(results, frame)
+}
+results = arrange(results, agreement) %>% # arrange from high to low agreement
+  mutate(xaxis = 1:n(),
+         xaxis = factor(xaxis, levels=1:n(), labels=var),
+         score = as.numeric(var %in% c("cri_stal_risk","spict_status"))+1,
+         score = factor(score))
+```
+
+There are `r nrow(data)` observations from `r length(unique(data$auditor))` auditors.
+
+## Chance-corrected agreement coefficients for categorical variables
+
+```{r, fig.width=10, fig.height=8}
+cat_plot = ggplot(data=results, aes(x=xaxis, y=agreement, col=score, shape=factor(type)))+
+  geom_point(size=4)+
+  scale_shape_manual('`No` and `Unknown`', values=c(4,0), labels=c('Separate','Combined'))+
+  scale_color_manual('CRiSTAL/SPICT', values=c('black','red'), labels=c('No','Yes'))+
+  coord_flip()+
+  theme_bw()+
+  xlab('')+
+  ylab('Agreement')+
+  theme(
+    text = element_text(size=19),
+    panel.grid.minor.x = element_blank())
+cat_plot
+```
+
+The results are ordered from low to high agreement. We use Gwet's agreement statistic [@Wongpakaran2013]. An agreement of one is perfect positive agreement and zero is no agreement. The two key positive/negative classifications of CRiSTAL and SPICT are shown in red.
+
+We run two versions of the agreement statistics. One where the answers "no" and "unknown" are kept as separate answers, and one where they are "combined". This is because "no" and "unknown" have the same implication for the CRiSTAL and SPICT scores.
+
+## Agreement coefficients for continuous variables
+
+```{r}
+results_cont = NULL
+for (v in cont_vars){
+  long = select(data, case_study, auditor, v) 
+  formula = paste('as.factor(', v, ')~ -1 + (1|case_study) + (1|auditor)', sep = '')
+  model1 <- clmm(formula , link = "probit", threshold = "flexible", data=long)
+  var_u = as.numeric(model1$ST$case_study^2) # subjects
+  var_v = as.numeric(model1$ST$auditor^2) # experts
+  rho = var_u / (var_u + var_v + 1)
+frame = data.frame(var=v, rho=rho)
+  results_cont = bind_rows(results_cont, frame)
+}  
+results_cont = arrange(results_cont, rho) %>% # arrange from high to low rho
+  mutate(xaxis = 1:n(),
+         xaxis = factor(xaxis, levels=1:n(), labels=var))
+```
+
+```{r, fig.height=3}
+cont_plot = ggplot(data=results_cont, aes(x=xaxis, y=rho))+
+  geom_point(size=4)+
+  coord_flip()+
+  theme_bw()+
+  xlab('')+
+  ylab('Agreement (rho)')+
+  scale_y_continuous(limits=c(0,1))+
+  theme(
+    panel.grid.minor.x = element_blank())
+cont_plot
+```
+
+The three continuous variables need a different agreement statistic. We use the ordinal method described in @Nelson15. 
+
+# References
