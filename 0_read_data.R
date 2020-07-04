@@ -121,6 +121,8 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
          min = as.numeric(str_sub(admission_date, 15, 16)),
          admission_time = hour + (min/60),
          admission_date = as.Date(str_sub(admission_date, 1, 10)),
+         # fix error in stroke response
+         cristal_stroke_factor = ifelse(cristal_stroke_factor == 'No,', 'No', cristal_stroke_factor),
   # clinical frailty score
          cristal_cfs_score = ifelse(cristal_cfs_score==1, NA, cristal_cfs_score), # 1 is unknown ...
          cristal_cfs_score = cristal_cfs_score - 1, # ... now shift scores down by 1
