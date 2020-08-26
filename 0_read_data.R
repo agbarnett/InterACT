@@ -1,13 +1,14 @@
 # 0_read_data.R
 # read the data from redcap using the export function from REDCap
 # Use all three versions of REDCAP databases
-# June 2020
+# August 2020
 library(readxl)
 library(tidyr)
 library(dplyr)
 library(stringr)
 library(janitor) # for variable names
 setwd("U:/Research/Projects/ihbi/aushsi/interact/Rstuff")
+source('99_functions.R')
 
 # data exports from REDCap using R
 # click "removed all tagged identifiers"
@@ -38,13 +39,56 @@ for (this in d){
     mutate(hospital = hosp,
            redcap_version = version) %>%
     select(-ends_with('_complete'))
+  # remove labels as this was causing errors with slightly different labels in concatenation
+  data = mutate_all(data, clear.labels)
+  ## fix team variable
+  # gcuh
+  if(hosp=='GCUH' & version==2){
+    data = select(data, -rbwh_team) %>%
+      rename('gcuh_team_factor' = 'rbwh_team_factor') # wrong hospital name
+  }
+  if(hosp=='GCUH' & version==3){
+    data = select(data, -team) %>%
+      rename('gcuh_team_factor' = 'team_factor')
+  }
+  # tpch
+  if(hosp=='TPCH' & version==2){
+    data = select(data, -rbwh_team) %>%
+      rename('tpch_team_factor' = 'rbwh_team_factor') # wrong hospital name
+  }
+  if(hosp=='TPCH' & version==3){
+    data = select(data, -team) %>%
+      rename('tpch_team_factor' = 'team_factor')
+  }
+  # rbwh
+  if(hosp=='RBWH' & version==3){
+    data = select(data, -team) %>%
+      rename('rbwh_team_factor' = 'team_factor')
+  }
+  # concatenate
   all_data = bind_rows(all_data, data)
 }
+# get latest file date
+dates = file.info(dir())$ctime
+data_date = as.Date(max(dates))
 setwd('..') # move back
 # check forms
 table(all_data$redcap_event_name_factor)
 table(all_data$redcap_repeat_instrument)
 table(all_data$redcap_version)
+table(all_data$cristal_stroke_factor) # check error
+table(all_data$gcuh_team_factor, all_data$redcap_version) # check change
+table(all_data$rbwh_team_factor, all_data$redcap_version) # check change
+table(all_data$tpch_team_factor, all_data$redcap_version) # check change
+# discharge variables check; may have changed by version?
+table(all_data$discharge_type_factor, all_data$redcap_version) # 
+table(all_data$discharge_forms_factor, all_data$redcap_version) # 
+table(all_data$discharge_hosp_factor, all_data$redcap_version) # 
+
+
+# can drop levels from TPCH team
+levels = c('General Medicine','Respiratory','Orthopaedics')
+all_data = mutate(all_data, tpch_team_factor = as.factor(as.character(tpch_team_factor, levels=levels)))
 
 ## Section 0: initial cleans ##
 # a) remove duplicate IDs (only in version 1 or 2)
@@ -104,7 +148,7 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
          'cristal_ami_factor',
          'cristal_chf_factor',
          'cristal_copd_factor',
-         'cristal_stroke_factor',
+         'cristal_stroke', # not factor, see fix below
          'cristal_cognitive_factor',
          'cristal_liver_factor',
          "cristal_gcs_factor",
@@ -121,8 +165,8 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
          min = as.numeric(str_sub(admission_date, 15, 16)),
          admission_time = hour + (min/60),
          admission_date = as.Date(str_sub(admission_date, 1, 10)),
-         # fix error in stroke response
-         cristal_stroke_factor = ifelse(cristal_stroke_factor == 'No,', 'No', cristal_stroke_factor),
+         # fix REDCap error in stroke response
+         cristal_stroke_factor = factor(cristal_stroke, levels=1:3, labels=c('Yes',"No",'Unknown')),
   # clinical frailty score
          cristal_cfs_score = ifelse(cristal_cfs_score==1, NA, cristal_cfs_score), # 1 is unknown ...
          cristal_cfs_score = cristal_cfs_score - 1, # ... now shift scores down by 1
@@ -131,6 +175,7 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
   # at risk, so cristal or spict positive
          at_risk = pmax(cristal_score>=5, spict_score>=2),
          at_risk = factor(at_risk, levels=0:1, labels=c('Not at risk','At risk'))) %>% 
+  select(-cristal_stroke) %>% # remove stroke; just this one because of data error
   # renaming
   rename('age' = "pt_age") %>%
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) %>% # remove _factor from variable names
@@ -257,8 +302,17 @@ cristal.vars = c('cristal_admit_ed','cristal_admit_source',
 # final tidy
 baseline = select(baseline, -starts_with('start_date_time'), -starts_with('end_date_time')) # do not need these date/time variables
 
-# save
-save(spict.vars, cristal.vars, baseline, complete, care_directive, palliative_care_referral, clinicianled_review, file='data/FullData.RData')
+## thresholds
+thresholds = list()
+# add the score thresholds (positive if on or above)
+thresholds$cristal_threshold = 6
+thresholds$spict_threshold = 2
+# these two thresholds (although 1 is unknown in REDCap, the score has been adjusted in 0_read_data)
+thresholds$frailty_threshold = 5
+thresholds$frailty_threshold2 = 7 # second threshold added in May 2020
 
+# save
+save(thresholds, data_date, spict.vars, cristal.vars, baseline, complete, 
+     care_directive, palliative_care_referral, clinicianled_review, file='data/FullData.RData')
 
 # names(baseline)[grep('cristal_score', names(baseline))]

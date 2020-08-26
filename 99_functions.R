@@ -1,6 +1,6 @@
 # 99_functions.R
 # helpful functions for InterACT
-# June 2020
+# July 2020
 
 # rename for SPICT variables
 nice.rename.spict = function(x){
@@ -101,3 +101,18 @@ care_directives = c('Active treatment reduced or ceased', 'Active treatment cont
 'Active treatment increased', 'Comfort care initiated or increased', 
 'Resuscitation plan completed or updated', 'Advance Care Plan completed or initiated', 
 'Statement of choices completed or initiated', 'Other')
+
+# remove Hmisc labels (used by 0_read_data.R)
+# https://stackoverflow.com/questions/2394902/remove-variable-labels-attached-with-foreign-hmisc-spss-import-functions
+clear.labels <- function(x) {
+  if(is.list(x)) {
+    for(i in seq_along(x)) {
+      class(x[[i]]) <- setdiff(class(x[[i]]), 'labelled') 
+      attr(x[[i]],"label") <- NULL
+    } 
+  } else {
+    class(x) <- setdiff(class(x), "labelled")
+    attr(x, "label") <- NULL
+  }
+  return(x)
+}
