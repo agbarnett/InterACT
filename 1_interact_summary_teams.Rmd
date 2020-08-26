@@ -1,0 +1,220 @@
+---
+title: 'InterACT study: hospital-level summary for teams'
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: false
+    reference_docx: rmarkdown-style-teams.docx
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+source('99_functions.R')
+library(diagram)
+library(pander)
+library(dplyr)
+library(stringr)
+library(visdat) # for missing data
+library(ggplot2)
+library(ggupset)  # to plot combination of symptoms
+library(summarytools)
+# global options for summary tools
+st_options(plain.ascii = FALSE,       # Always use this option in Rmd documents
+            style = "rmarkdown",        # This too
+            round.digits = 0, 
+            headings = FALSE, 
+            footnote = NA,             # Avoids footnotes which would clutter the results
+            subtitle.emphasis = FALSE  # Improves layout with some rmardown themes
+) 
+
+# graphics things:
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7")
+
+# get the data
+load('data/FullData.RData') # from 0_read_data.R 
+# remove pre-covid data
+baseline = filter(baseline, admission_date >= as.Date('2020-05-01'))
+
+## for one hospital - to automate
+this_hospital = 'TPCH'
+this_team = 'General Medicine'
+team_var = 'tpch_team'
+names(baseline)[names(baseline) == team_var] = 'team' # rename
+baseline = filter(baseline, 
+                  hospital == this_hospital,
+                  team == this_team)
+```
+
+Results for `r this_hospital` hospital, Team = `r this_team`.
+
+### Numbers screened by InterACT and at risk 
+
+```{r, results='asis', fig.width=3.5, fig.height=2.7}
+N = nrow(baseline)  # starting number
+tab1 = table(baseline$baseline_screening_complete) # table of screening complete
+ptab1 = round(prop.table(tab1)*100)
+baseline = filter(baseline, baseline_screening_complete=='Yes')
+tab2 = table(baseline$at_risk) # table of at risk conditional on screening complete
+ptab2 = round(prop.table(tab2)*100)
+M <- matrix(nrow = 5, ncol = 5, byrow = TRUE, data = 0)
+# names
+l1 = paste('Total\n', N)
+l2 = paste('Screening\nnot complete\n', tab1[1], ' (', ptab1[1], '%)', sep='')
+l3 = paste('Screening\ncomplete\n', tab1[2], ' (', ptab1[2], '%)', sep='')
+l4 = paste('Not at risk\n', tab2[1], ' (', ptab2[1], '%)', sep='')
+l5 = paste('At risk\n', tab2[2], ' (', ptab2[2], '%)', sep='')
+names = c(l1, l2, l3, l4, l5)
+# transitions
+M[2,1] = "' '"
+M[3,1] = "' '"
+M[4,3] = "' '"
+M[5,3] = "' '"
+par(mai=rep(0.01,4))
+plotmat(M, name = names, pos=c(1,2,2), curve = 0, box.cex = 1, box.lwd = 2,
+        box.size = 0.17, box.prop=0.56, arr.pos = 0.5, box.type = 'rect', arr.type = 'triangle', arr.length = 0.2, arr.width = 0.3, cex=0.25, # cex controls text size
+        box.col = c("lightblue","green", "green", "yellow", "yellow"))
+
+### now just at risk patients ###
+baseline = filter(baseline, 
+                  at_risk=='At risk',
+                  !is.na(at_risk))
+```
+
+All results from now are for the `r nrow(baseline)` at risk.
+
+### Numbers with a documented care directive prior to this hospital admission. For example: Advance Care Plan, Statement of Choices
+
+```{r, results='asis'}
+with(baseline, freq(presence_eol_plan, cumul=FALSE, report.nas = FALSE))
+```
+
+#### Weekly numbers with a plan over time (average and 95% confidence interval)
+
+```{r, fig.width=7, fig.height=3}
+# make weeks
+for_plot = mutate(baseline, 
+                  year = as.numeric(format(admission_date, '%Y')),
+                  week = as.numeric(format(admission_date, '%U'))/53,
+                  weekfrac = year + week) %>%
+  group_by(weekfrac) %>%
+  summarise(n=n(), yes=sum(presence_eol_plan=='Yes')) %>%
+  ungroup() %>%
+  mutate(p = yes/n,
+         se = sqrt(p*(1-p)/n),
+         z = qnorm(0.975),
+         lower = p - (z*se), # make confidence interval
+         upper = p + (z*se),
+         p = p*100, # conver to percent
+         lower = lower*100,
+         upper = upper*100
+         )
+# x-axis labels 
+x.breaks = paste('2020-', sprintf('%02d', 1:12), '-01', sep='') # make first of month
+x.breaks = as.Date(x.breaks)
+x.breaks = 2020 + season::yrfraction(x.breaks)
+# plot
+plot_time = ggplot(data=for_plot, aes(x=weekfrac, y=p, ymin=lower, ymax=upper))+
+  geom_point(col='burlywood4', size=4)+
+  geom_errorbar(width=0, col='burlywood4', size=1.1)+
+  scale_x_continuous(breaks=x.breaks, labels=month.abb)+
+  theme_bw()+
+  ylab('Percent with a care directive')+
+  xlab('Time')
+plot_time  
+```
+
+
+# SPICT 
+
+### Ten most common combinations
+
+```{r, fig.width=7, fig.height=4}
+# get combinations of yes responses
+yes_responses <-  dplyr::select(baseline, participant_id, spict.vars)  %>%
+  as_tibble() %>%
+  tidyr::gather(key='spict', value='response', -participant_id) %>%
+  filter(response=='Yes') %>% # just yes
+  select(-response) %>%
+  mutate(spict = nice.rename.spict(spict)  )
+# now make list from group responses
+list_resp = group_by(yes_responses, participant_id) %>%
+  summarise(spicts = list(spict))
+# add zeros
+all_ids = unique(baseline$participant_id)
+missing.ids = all_ids[all_ids %in% list_resp$participant_id == FALSE]
+zeros = as_tibble(data.frame(participant_id=missing.ids))
+list_resp = bind_rows(list_resp, zeros)
+# plot
+cplot = ggplot(list_resp, aes(x = spicts)) +
+    geom_bar(aes(y=..count../sum(..count..)), fill = "indianred3") +
+    theme_bw() +
+    xlab("") +
+    ylab("Proportion of patients") +
+    scale_x_upset(n_intersections = 10, n_sets=10)+ # top ten
+    g.theme+
+  theme(plot.margin = margin(t = 0, r = 0, b = 0, l = 90, unit = "pt"))
+cplot
+```
+
+### Numbers positive
+
+The threshold for SPICT positive is `r thresholds$spict_threshold` or more.
+
+```{r, results='asis'}
+baseline = mutate(baseline, 
+                  `SPICT positive` = as.numeric(spict_score >= thresholds$spict_threshold),
+                  `SPICT positive` = factor(`SPICT positive`, levels=0:1, labels=c('No','Yes')))
+with(baseline, freq(`SPICT positive`, cumul = FALSE, report.nas = FALSE))
+```
+
+# CriSTAL 
+
+### Ten most common combinations
+
+```{r, fig.width=7, fig.height=5}
+# get combinations of yes responses
+yes_responses <-  dplyr::select(baseline, participant_id, cristal.vars)  %>%
+  mutate(
+    #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary - no longer using age in cristal
+         cristal_cfs_score1 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold, 'Yes', 'No'), # frailty score over 5
+         cristal_cfs_score2 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold2, 'Yes', 'No')) %>%  # frailty score over 7
+  select(-cristal_cfs_score) %>% # no longer needed
+  mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
+  as_tibble() %>%
+  tidyr::gather(key='cristal', value='response', -participant_id) %>%
+  filter(response=='Yes') %>% # just yes
+  select(-response) %>%
+  mutate(cristal = nice.rename.cristal(cristal)  )
+# now make list from group responses
+list_resp = group_by(yes_responses, participant_id) %>%
+  summarise(cristals = list(cristal))
+# add zeros
+all_ids = unique(baseline$participant_id)
+missing.ids = all_ids[all_ids %in% list_resp$participant_id == FALSE]
+zeros = as_tibble(data.frame(participant_id=missing.ids))
+list_resp = bind_rows(list_resp, zeros)
+# plot
+# to do, colour bar by threshold?
+cplot = ggplot(list_resp, aes(x = cristals)) +
+    geom_bar(aes(y=..count../sum(..count..)), fill = "#6855CD") +
+    theme_bw() +
+    xlab("") +
+    ylab("Proportion of patients") +
+    scale_x_upset(n_intersections = 10, n_sets=10) # top ten
+cplot
+```
+
+### Numbers positive
+
+A CriSTAL positive score is `r thresholds$cristal_threshold` or above.
+
+```{r, results='asis'}
+baseline = mutate(baseline, 
+                  `CriSTAL positive` = as.numeric(cristal_score >= thresholds$cristal_threshold),
+                  `CriSTAL positive` = factor(`CriSTAL positive`, levels=0:1, labels=c('No','Yes')))
+with(baseline, freq(`CriSTAL positive`, cumul=FALSE, report.nas = FALSE))
+```

@@ -1,5 +1,5 @@
 ---
-title: 'InterACT project: statistical analysis'
+title: 'InterACT project: overall statistical analyses for all three hospitals'
 author: "Adrian Barnett"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 output:
@@ -35,12 +35,6 @@ st_options(plain.ascii = FALSE,       # Always use this option in Rmd documents
 
 # get the data
 load('data/FullData.RData') # from 0_read_data.R 
-# add the score thresholds (positive if on or above)
-cristal_threshold = 5
-spict_threshold = 2
-# these two thresholds (although 1 is unknown in REDCap, the score has been adjusted in 0_read_data)
-frailty_threshold = 5
-frailty_threshold2 = 7 # second threshold added in May 2020
 
 # graphics things:
 g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
@@ -51,7 +45,7 @@ cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00",
 # colour upset_plots according to positive, or split one for screened and one for cristal/spict positive
 ```
 
-This report shows the summary statistics and analysis for the InterACT study. The code is available on [GitHub](https://github.com/agbarnett/InterACT).
+This report shows the summary statistics and analysis for the InterACT study using the date available on `r format(data_date, '%d-%b%-%Y')`. The code is available on [GitHub](https://github.com/agbarnett/InterACT).
 
 # Missing data
 
@@ -298,7 +292,8 @@ to.corr = select(baseline, spict.vars) %>% # these are just yes/no/unknown
 corr <- cor(to.corr, use = 'pairwise')
 colnames(corr) = row.names(corr) = nice.rename.spict(colnames(corr)) # rename
 # plot
-ggcorrplot(corr)
+diag(corr) = NA # blank diagonals
+ggcorrplot(corr) 
 # for text around strongest correlation
 max.corr = max(corr[lower.tri(corr, diag=FALSE)])
 vars = which(corr==max.corr, arr.ind = T)
@@ -327,11 +322,11 @@ with(spict,
 ```{r, fig.width=8, results='asis'}
 to.bar = group_by(baseline, hospital, spict_score) %>%
   summarise(count = n()) %>%
-  mutate(fill = as.factor(spict_score >= spict_threshold))
+  mutate(fill = as.factor(spict_score >= thresholds$spict_threshold))
 spict.bar = ggplot(data=to.bar, aes(x=spict_score, y=count, fill=fill))+ # colour bars by positive
   xlab('SPICT score')+
   ylab('Count')+
-  scale_x_continuous(breaks=0:5)+
+  scale_x_continuous(breaks=0:6)+
   geom_bar(stat='identity')+
   scale_fill_manual(NULL, values=c('skyblue','dark blue'))+
   g.theme+
@@ -344,11 +339,11 @@ The darker blue bars show the SPICT-positive patients.
 
 ## SPICT positive by hospital
 
-The threshold for SPICT positive is `r spict_threshold` or more.
+The threshold for SPICT positive is `r thresholds$spict_threshold` or more.
 
 ```{r, results='asis'}
 baseline = mutate(baseline, 
-                  `SPICT positive` = as.numeric(spict_score >= spict_threshold),
+                  `SPICT positive` = as.numeric(spict_score >= thresholds$spict_threshold),
                   `SPICT positive` = factor(`SPICT positive`, levels=0:1, labels=c('No','Yes')))
 with(baseline, ctable(y = `SPICT positive`, x = hospital, round.digits=0, useNA='no', dnn=c('Hospital','')))
 ```
@@ -380,7 +375,7 @@ cplot = ggplot(list_resp, aes(x = spicts)) +
     theme_bw() +
     xlab("SPICT variables") +
     ylab("Proportion of patients") +
-    scale_x_upset()+
+    scale_x_upset(n_intersections = 20, n_sets = 20)+ # top twenty
     g.theme+
   theme(plot.margin = margin(t = 0, r = 0, b = 0, l = 80, unit = "pt"))
 cplot
@@ -388,7 +383,7 @@ cplot
 
 # CriSTAL 
 
-The CriSTAL score has a range from 0 to ? and uses the following 16 variables:
+The CriSTAL score has a range from 0 to 18 and uses the following 16 variables:
 
 * Admitted via ED
 * Admitted From nursing home
@@ -427,6 +422,7 @@ colnames(corr) = row.names(corr) = nice.rename.cristal(colnames(corr)) # rename
 colnames(corr)[colnames(corr) == "Frailty score >= 6"] = 'Frailty score'
 row.names(corr)[row.names(corr) == "Frailty score >= 6"] = 'Frailty score'
 # plot
+diag(corr) = NA # blank diagonals
 ggcorrplot(corr)
 # for text around strongest correlation
 max.corr = max(corr[lower.tri(corr, diag=FALSE)])
@@ -445,8 +441,8 @@ The clinical frailty score is continuous, whereas the other variables are binary
 cristal = select(baseline, "participant_id", 'hospital', cristal.vars) %>%
   mutate(
     #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary , no longer using age in cristal
-         cristal_cfs_score1 = ifelse(cristal_cfs_score >= frailty_threshold, 'Yes', 'No'), # frailty score over 5,
-         cristal_cfs_score2 = ifelse(cristal_cfs_score >= frailty_threshold2, 'Yes', 'No') # frailty score over 7,
+         cristal_cfs_score1 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold, 'Yes', 'No'), # frailty score over 5,
+         cristal_cfs_score2 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold2, 'Yes', 'No') # frailty score over 7,
          ) %>% 
   select(-cristal_cfs_score) %>% # no longer need score
   mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
@@ -463,7 +459,7 @@ with(cristal,
 ```{r, fig.width=8}
 to.bar = group_by(baseline, hospital, cristal_score) %>%
   summarise(count = n()) %>%
-  mutate(fill = as.factor(cristal_score >= cristal_threshold))
+  mutate(fill = as.factor(cristal_score >= thresholds$cristal_threshold))
 cristal.bar = ggplot(data=to.bar, aes(x=cristal_score, y=count, fill=fill))+ # colour bars by positive
   xlab('CriSTAL score')+
   ylab('Count')+
@@ -491,12 +487,12 @@ stby(data = baseline$cristal_score,
 
 ```{r, results='asis'}
 baseline = mutate(baseline, 
-                  `CriSTAL positive` = as.numeric(cristal_score >= cristal_threshold),
+                  `CriSTAL positive` = as.numeric(cristal_score >= thresholds$cristal_threshold),
                   `CriSTAL positive` = factor(`CriSTAL positive`, levels=0:1, labels=c('No','Yes')))
 with(baseline, ctable(y = `CriSTAL positive`, x = hospital, round.digits=0, useNA='no', dnn =c('Hospital','')))
 ```
 
-A CriSTAL positive score is `r cristal_threshold` or above, and we apply this for the entire cohort.
+A CriSTAL positive score is `r thresholds$cristal_threshold` or above, and we apply this for the entire cohort.
 
 ## Common combinations for CriSTAL 
 
@@ -509,8 +505,8 @@ If a CriSTAL variable is not shown, it means it was not used in any of the top t
 yes_responses <-  dplyr::select(baseline, participant_id, cristal.vars)  %>%
   mutate(
     #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary - no longer using age in cristal
-         cristal_cfs_score1 = ifelse(cristal_cfs_score >= frailty_threshold, 'Yes', 'No'), # frailty score over 5
-         cristal_cfs_score2 = ifelse(cristal_cfs_score >= frailty_threshold2, 'Yes', 'No')) %>%  # frailty score over 7
+         cristal_cfs_score1 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold, 'Yes', 'No'), # frailty score over 5
+         cristal_cfs_score2 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold2, 'Yes', 'No')) %>%  # frailty score over 7
   select(-cristal_cfs_score) %>% # no longer needed
   mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
   as_tibble() %>%
@@ -533,7 +529,7 @@ cplot = ggplot(list_resp, aes(x = cristals)) +
     theme_bw() +
     xlab("CriSTAL variables") +
     ylab("Proportion of patients") +
-    scale_x_upset(n_intersections = 20) # top twenty
+    scale_x_upset(n_intersections = 20, n_sets = 20) # top twenty
 cplot
 ```
 
@@ -556,14 +552,14 @@ p
 
 ## Alternative CriSTAL score
 
-Here we examine if adding a second point to the total CriSTAL score for `r frailty_threshold2`+ on the clinical frailty score makes a difference to the number of CriSTAL positive patients. The lower threshold is at a clinical frailty score of `r frailty_threshold`.
+Here we examine if adding a second point to the total CriSTAL score for `r thresholds$frailty_threshold2`+ on the clinical frailty score makes a difference to the number of CriSTAL positive patients. The lower threshold is at a clinical frailty score of `r thresholds$frailty_threshold`.
 
 ```{r, results='asis'}
 update = mutate(baseline, 
-                cristal_score_new = cristal_score + as.numeric(cristal_cfs_score >= frailty_threshold2), # add one more to score for high frailty
-                `CriSTAL positive` = as.numeric(cristal_score >= cristal_threshold),
+                cristal_score_new = cristal_score + as.numeric(cristal_cfs_score >= thresholds$frailty_threshold2), # add one more to score for high frailty
+                `CriSTAL positive` = as.numeric(cristal_score >= thresholds$cristal_threshold),
                 `CriSTAL positive` = factor(`CriSTAL positive`, levels=0:1, labels=c('No','Yes')),
-                `CriSTAL positive new` = as.numeric(cristal_score_new >= cristal_threshold),
+                `CriSTAL positive new` = as.numeric(cristal_score_new >= thresholds$cristal_threshold),
                 `CriSTAL positive new` = factor(`CriSTAL positive new`, levels=0:1, labels=c('No','Yes'))) 
 # now cross-table by hospital
 with(update, ctable(`CriSTAL positive`, `CriSTAL positive new`, round.digits=0, useNA='no', dnn=c('Old','New')))
