@@ -124,7 +124,27 @@ all_data = anti_join(all_data, knock.out, by=c('participant_id','hospital','redc
 all_data = mutate(all_data, participant_id = paste(hospital, '_V', redcap_version, '_', participant_id, sep='')) # to avoid overlapping numbers
 
 ## Section 1: split into data sets that match REDCap forms ##
-# a) baseline
+## a) study completion
+complete = filter(all_data, redcap_event_name_factor == 'Study completion') %>%
+  select("participant_id",'hospital','redcap_version',
+         'start_date_time_dcharg','end_date_time_dcharg','total_spict_cristal_pipe',
+         'discharge_type_factor','discharge_forms_factor','discharge_hosp_factor',
+         'hosp_discharge_date','discharge_factor','covid19_factor','covid19_date',
+         'screening_completion_complete_factor') %>%
+  rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
+for (k in 1:nrow(complete)){
+  complete$hosp_discharge_date[k] = ifelse(complete$hosp_discharge_date[k]=='', NA, as.POSIXct(complete$hosp_discharge_date[k], tz='Australia/Brisbane'))
+  complete$start_date_time_dcharg[k] = ifelse(complete$start_date_time_dcharg[k]=='', NA, as.POSIXct(complete$start_date_time_dcharg[k], tz='Australia/Brisbane'))
+  complete$end_date_time_dcharg[k] = ifelse(complete$end_date_time_dcharg[k]=='', NA, as.POSIXct(complete$end_date_time_dcharg[k], tz='Australia/Brisbane'))
+}
+# work on dates
+complete = mutate(complete,
+                  time_dcharg = (as.numeric(end_date_time_dcharg) - as.numeric(start_date_time_dcharg))/60,
+                  start_date_time_dcharg = as.POSIXct(as.numeric(start_date_time_dcharg), origin='1970-01-01'),
+                  end_date_time_dcharg = as.POSIXct(as.numeric(end_date_time_dcharg), origin='1970-01-01'),
+                  hosp_discharge_date = as.POSIXct(as.numeric(hosp_discharge_date), origin='1970-01-01'))
+
+# b) baseline
 baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>%
   select('participant_id','hospital','redcap_version','pt_age','pt_sex_factor',
          'admission_date',
@@ -211,24 +231,24 @@ form_dates = select(baseline, participant_id,
   gather(key='form', value='datetime', -`participant_id`) %>%
   mutate(datetime = as.numeric(datetime)) %>% # convert to number
   filter(!is.na(datetime))  # remove missing
-earliest = group_by(form_dates, participant_id) %>%
-  summarise(earliest_form = min(datetime), # earliest time
+median = group_by(form_dates, participant_id) %>% # 
+  summarise(median_form = min(datetime), # median time, excludes outliers
             range = max(datetime)-min(datetime)) %>% # look for unusual variance
   ungroup()
 ## check form dates ##
-check = filter(earliest, range > 5*24*60*60) %>% # longer than 5 days between earliest and latest form
+check = filter(median, range > 5*24*60*60) %>% # longer than 5 days between earliest and latest form
   left_join(form_dates, by='participant_id') %>%
   mutate(datetime = as.POSIXct(datetime, origin='1970-01-01', tz='Australia/Brisbane'),
          date = as.Date(datetime),
          form = str_remove(form, pattern='^start_date_time_')) %>% # simplify to date (drop time)
-  select(-earliest_form, -datetime, -range) %>% # not needed
+  select(-median_form, -datetime, -range) %>% # not needed
   spread(form, date)
 write.csv(check, file='checks/form_dates.csv', row.names = FALSE, quote=FALSE)
-# add earliest date to baseline data
-baseline = left_join(baseline, earliest, by='participant_id') %>%
+# add median date to baseline data
+baseline = left_join(baseline, median, by='participant_id') %>%
   select(-range) # no longer needed
 # everyone should have a date, so should be nobody
-missing_date = filter(baseline, is.na(earliest_form))
+missing_date = filter(baseline, is.na(median_form))
 
 # convert form completion time differences to numbers
 baseline = mutate(baseline, 
@@ -238,7 +258,34 @@ baseline = mutate(baseline,
                   time_comorb = (as.numeric(end_date_time_comorb) - as.numeric(start_date_time_comorb))/60,
 ) 
 
-## b) follow-up data ##
+# add complete to baseline
+completed = filter(complete, screening_completion_complete == 'Complete')
+baseline = mutate(baseline, 
+                  baseline_screening_complete = as.numeric(participant_id %in% completed$participant_id),
+                  baseline_screening_complete = ifelse(continue_456=='Yes', 1, baseline_screening_complete), # also if continue to forms 456 is positive
+                  baseline_screening_complete = ifelse(is.na(baseline_screening_complete)==TRUE, 0, baseline_screening_complete), # replace missing
+                  baseline_screening_complete = factor(baseline_screening_complete, levels=0:1, labels=c('No','Yes')))
+
+# consistently format dates
+baseline = select(baseline, -starts_with('start_date_time'), -starts_with('end_date_time')) %>% # do not need these date/time variables
+  mutate(admission_datetime = as.POSIXct(as.numeric(admission_datetime), origin='1970-01-01'),
+         median_form = as.POSIXct(as.numeric(median_form), origin='1970-01-01'),
+         # add single team variable
+         t1 = paste('GCUH - ', gcuh_team, sep=''),
+         t2 = paste('RBWH - ', rbwh_team, sep=''),
+         t3 = paste('TPCH - ', tpch_team, sep=''),
+         team = '',
+         team = ifelse(is.na(gcuh_team)==FALSE, t1, team),
+         team = ifelse(is.na(rbwh_team)==FALSE, t2, team),
+         team = ifelse(is.na(tpch_team)==FALSE, t3, team)
+         ) %>%
+  select(-t1, -t2, -t3) # no longer needed
+
+#### add intervention time to baseline ###
+baseline = int_time(baseline) # see 99_functions.R
+
+
+## c) follow-up data ##
 # i) clinician led review, do not include 'datediff_clinician_review' as calculated using function instead
 clinicianled_review = filter(all_data, redcap_repeat_instrument == 'clinicianled_review_discussion') %>%
   select('participant_id','hospital','redcap_version',
@@ -265,10 +312,13 @@ clinicianled_review = mutate(clinicianled_review,
                              time_care_review = as.POSIXct(as.numeric(time_care_review), origin='1970-01-01'))
 # time to first review
 clinicianled_review = time_to_first(form = clinicianled_review, 
-                                    change_var = 'care_review', # yes/no variable that determines event of interst
+                                    change_var = 'care_review', # yes/no variable that determines event of interest
                                     outcome_date = 'time_care_review',  # date/time review occurred
                                     form_date = 'start_date_time_4', # date form was completed
                                     at_risk_date = 'admission_datetime') # could be start_date_time_comorb, but assuming at risk from admission
+# add intervention time
+int_time_data = select(baseline, participant_id, int_time) # data with just intervention time
+clinicianled_review = left_join(clinicianled_review, int_time_data, by='participant_id')
 
 # ii) care directive
 # do not include 'datediff_care_directive', as calculated using function instead
@@ -298,7 +348,7 @@ care_directive =  time_to_first(form = care_directive,
                                 outcome_date = 'date_time_5', 
                                 form_date = 'start_date_time_5',
                                 at_risk_date = 'admission_datetime') # could be start_date_time_comorb, but assuming at risk from admission
-
+care_directive = left_join(care_directive, int_time_data, by='participant_id')
 
 ## checks ##
 # 1) check negative dates (lots!) #
@@ -338,47 +388,9 @@ palliative_care_referral = time_to_first(form = palliative_care_referral,
                                          outcome_date = 'pall_date', 
                                          form_date = 'start_date_time_6',
                                          at_risk_date = 'admission_datetime') # could be start_date_time_comorb, but assuming at risk from admission
-
-## c) study completion
-complete = filter(all_data, redcap_event_name_factor == 'Study completion') %>%
-  select("participant_id",'hospital','redcap_version',
-         'start_date_time_dcharg','end_date_time_dcharg','total_spict_cristal_pipe',
-         'discharge_type_factor','discharge_forms_factor','discharge_hosp_factor',
-         'hosp_discharge_date','discharge_factor','covid19_factor','covid19_date',
-         'screening_completion_complete_factor') %>%
-  rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
-for (k in 1:nrow(complete)){
-  complete$hosp_discharge_date[k] = ifelse(complete$hosp_discharge_date[k]=='', NA, as.POSIXct(complete$hosp_discharge_date[k], tz='Australia/Brisbane'))
-  complete$start_date_time_dcharg[k] = ifelse(complete$start_date_time_dcharg[k]=='', NA, as.POSIXct(complete$start_date_time_dcharg[k], tz='Australia/Brisbane'))
-  complete$end_date_time_dcharg[k] = ifelse(complete$end_date_time_dcharg[k]=='', NA, as.POSIXct(complete$end_date_time_dcharg[k], tz='Australia/Brisbane'))
-}
-# work on dates
-complete = mutate(complete,
-      time_dcharg = (as.numeric(end_date_time_dcharg) - as.numeric(start_date_time_dcharg))/60,
-      start_date_time_dcharg = as.POSIXct(as.numeric(start_date_time_dcharg), origin='1970-01-01'),
-      end_date_time_dcharg = as.POSIXct(as.numeric(end_date_time_dcharg), origin='1970-01-01'),
-      hosp_discharge_date = as.POSIXct(as.numeric(hosp_discharge_date), origin='1970-01-01'))
-
-# add complete to baseline
-completed = filter(complete, screening_completion_complete == 'Complete')
-baseline = mutate(baseline, 
-                  baseline_screening_complete = as.numeric(participant_id %in% completed$participant_id),
-                  baseline_screening_complete = ifelse(continue_456=='Yes', 1, baseline_screening_complete), # also if continue to forms 456 is positive
-                  baseline_screening_complete = ifelse(is.na(baseline_screening_complete)==TRUE, 0, baseline_screening_complete), # replace missing
-                  baseline_screening_complete = factor(baseline_screening_complete, levels=0:1, labels=c('No','Yes')))
-
-### any 4,5,6 forms completed to baseline
-any_456 = bind_rows(care_directive, palliative_care_referral, clinicianled_review) %>%
-  select(participant_id) %>%
-  unique() # at least one form
-baseline = mutate(baseline,
-                  complete_456 = ifelse(participant_id%in%any_456$participant_id, "Yes", "No"))
+palliative_care_referral = left_join(palliative_care_referral, int_time_data, by='participant_id')
 
 ## consistently format all dates/times ##
-baseline = select(baseline, -starts_with('start_date_time'), -starts_with('end_date_time')) %>% # do not need these date/time variables
-  mutate(admission_datetime = as.POSIXct(as.numeric(admission_datetime), origin='1970-01-01'),
-         earliest_form = as.POSIXct(as.numeric(earliest_form), origin='1970-01-01'))
-#
 care_directive = mutate(care_directive,
                         at_risk_date = as.POSIXct(as.numeric(at_risk_date), origin='1970-01-01'))
 clinicianled_review = mutate(clinicianled_review,
@@ -386,22 +398,12 @@ clinicianled_review = mutate(clinicianled_review,
 palliative_care_referral = mutate(palliative_care_referral,
                                   at_risk_date = as.POSIXct(as.numeric(at_risk_date), origin='1970-01-01'))
 
-#### add intervention time ###
-load('data/date_changes.RData') # from 0_date_changes.R
-baseline = left_join(baseline, date_changes, by='hospital') %>%
-  mutate(
-    date_seen = as.Date(format(earliest_form, '%Y-%m-%d')), # use earliest form
-    int_time = case_when(
-      date_seen < date_usual_care ~ 0, # just versions 1 and 2, pre-covid
-      date_seen >= date_usual_care & date_seen < date_establishment ~ 1,
-      date_seen >= date_establishment & date_seen < date_intervention ~ 2,
-      date_seen >= date_intervention & date_seen < date_post ~ 3,
-      date_seen >= date_post & date_seen < date_end ~ 4,
-      TRUE ~ 5 # catch remainder, likely errors
-    ),
-    int_time = factor(int_time, levels=0:5, labels=c('Pre-COVID','Usual care','Establishment','Intervention','Post-intervention','Error'))) %>% 
-  select(-'date_usual_care',-'date_establishment',-'date_intervention',-'date_post',-'date_end') # no longer needed
-
+### any 4,5,6 forms completed to baseline
+any_456 = bind_rows(care_directive, palliative_care_referral, clinicianled_review) %>%
+  select(participant_id) %>%
+  unique() # at least one form
+baseline = mutate(baseline,
+                  complete_456 = ifelse(participant_id%in%any_456$participant_id, "Yes", "No"))
 
 ## vector of SPICT and CRISTAL variables
 # SPICT
