@@ -35,8 +35,9 @@ st_options(plain.ascii = FALSE,       # Always use this option in Rmd documents
 # graphics things:
 library(diagram)
 library(ggplot2)
-library(ggupset)  # to plot combination of symptoms
+library(ggupset) # to plot combination of symptoms
 g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+theme_set(g.theme)
 cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7")
 
 ## for one hospital and team

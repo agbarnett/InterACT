@@ -1,0 +1,494 @@
+---
+title: 'InterACT study: hospital-level summary for teams or hospitals split by planned or unplanned admission'
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+  toc: false
+reference_docx: rmarkdown-style-teams.docx
+---
+  
+```{r setup, include=FALSE}
+# this program is called by:
+# 1_create_multiple_reports_teams.R
+
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(dplyr.summarise.inform=FALSE) # turn off annoying warning
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+source('99_functions.R')
+library(pander)
+library(flextable)
+library(dplyr)
+library(stringr)
+library(visdat) # for missing data
+library(summarytools)
+# global options for summary tools
+st_options(plain.ascii = FALSE,       # Always use this option in Rmd documents
+           style = "rmarkdown",        # This too
+           round.digits = 0, 
+           headings = FALSE, 
+           footnote = NA,             # Avoids footnotes which would clutter the results
+           subtitle.emphasis = FALSE  # Improves layout with some rmarkdown themes
+) 
+
+# graphics things:
+layout(1)
+library(diagram)
+library(scales)
+library(ggplot2)
+library(ggupset)  # to plot combination of symptoms
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7")
+
+## for one hospital and team
+names(baseline)[names(baseline) == team_var] = 'team' # rename
+if(this_hospital != 'All'){ # do not filter if for all hospitals
+  baseline = dplyr::filter(baseline, 
+                  hospital == this_hospital)
+}
+if(this_team != 'AllTeams'){
+  baseline = filter(baseline, team %in% this_team)
+}
+# (other forms dealt with below)
+```
+
+Results for `r this_hospital` hospital, Team = `r this_team`. The data are from `r format(data_date, '%d-%b-%Y')`.
+
+### Numbers screened by InterACT and at risk 
+
+```{r, fig.width=7.6, fig.height=4.2}
+# function to create identical plot
+make_one_plot = function(indata, which_group){
+  indata = filter(indata, spict_unplan_hosp == which_group) # Limit data by planned/unplanned
+N = nrow(indata)  # starting number
+# table of screening complete:
+tab1 = table(indata$baseline_screening_complete) 
+ptab1 = round(prop.table(tab1)*100)
+indata = filter(indata, baseline_screening_complete=='Yes')
+# table of at risk conditional on screening complete:
+tab2 = table(indata$at_risk) 
+ptab2 = round(prop.table(tab2)*100)
+# table of 4,5,6 forms done
+at_risk = filter(indata, at_risk=='At risk')
+tab3 = table(at_risk$complete_456) 
+ptab3 = round(prop.table(tab3)*100)
+# names
+l1 = paste('Total\n', N, sep='')
+l2 = paste('Screening\nnot complete\n', tab1[names(tab1)=='No'], ' (', ptab1[names(ptab1)=='No'], '%)', sep='')
+l3 = paste('Screening\ncomplete\n', tab1[names(tab1)=='Yes'], ' (', ptab1[names(ptab1)=='Yes'], '%)', sep='')
+l4 = paste('Not at risk\n', tab2[names(tab2)=='Not at risk'], ' (', ptab2[names(ptab2)=='Not at risk'], '%)', sep='')
+l5 = paste('At risk\n', tab2[names(tab2)=='At risk'], ' (', ptab2[names(ptab2)=='At risk'], '%)', sep='')
+l6 = paste('No follow-up forms\ncomplete\n', tab3[names(tab3)=='No'], ' (', ptab3[names(ptab3)=='No'], '%)', sep='')
+l7 = paste('At least one follow-\nup form complete\n', tab3[names(tab3)=='Yes'], ' (', ptab3[names(ptab3)=='Yes'], '%)', sep='')
+names = c(l1, l2, l3, l4, l5, l6, l7)
+return(names)
+}
+names_planned = make_one_plot(indata=baseline, which_group='No')
+names_unplanned = make_one_plot(indata=baseline, which_group='Yes')
+# things common to both plots
+M <- matrix(nrow = 7, ncol = 7, byrow = TRUE, data = 0)
+# transitions
+M[2,1] = "' '"
+M[3,1] = "' '"
+M[4,3] = "' '"
+M[5,3] = "' '"
+M[6,5] = "' '"
+M[7,5] = "' '"
+colours = c("lightblue","green", "green", "yellow", "yellow",'pink','pink')
+sizes = c(0.15, rep(0.2, 6)) # smaller first box
+props = c(0.4, rep(0.48, 6)) # smaller first box
+## output to markdown document
+layout(matrix(c(1,2), 1, 2, byrow = TRUE))
+# Unplanned
+par(mai=c(0.01,0.01,0.15,0.01)) # bottom, left, top, right
+plotmat(main = 'Unplanned', cex.main=1.25,
+  M, name = names_unplanned, pos=c(1,2,2,2), curve = 0, box.cex = 1, box.lwd = 2,
+        box.size = sizes, box.prop=props, arr.pos = 0.5, box.type = 'rect', arr.type = 'triangle', arr.length = 0.2, arr.width = 0.3, cex=0.25, # cex controls text size
+        box.col = colours)
+# Planned
+par(mai=c(0.01,0.01,0.15,0.01))
+plotmat(main = 'Planned', cex.main=1.25,
+        M, name = names_planned, pos=c(1,2,2,2), curve = 0, box.cex = 1, box.lwd = 2,
+        box.size = sizes, box.prop=props, arr.pos = 0.5, box.type = 'rect', arr.type = 'triangle', arr.length = 0.2, arr.width = 0.3, cex=0.25, # cex controls text size
+        box.col = colours)
+# export to figure
+layout(1)
+filename = paste('figures/', this_hospital, '/', str_remove_all(this_team, pattern='_| '), '/numbers_split.jpg', sep='')
+jpeg(filename, width=8, height=4.8, quality = 100, res=500, units='in', bg='transparent')
+layout(matrix(c(1,2), 1, 2, byrow = TRUE))
+# Unplanned
+par(mai=c(0.01,0.01,0.15,0.01))
+plotmat(main='Unplanned', cex.main=1.25, 
+        M, name = names_unplanned, pos=c(1,2,2,2), curve = 0, box.cex = 1, box.lwd = 2,
+        box.size = sizes, box.prop=props, arr.pos = 0.5, box.type = 'rect', arr.type = 'triangle', arr.length = 0.2, arr.width = 0.3, cex=0.25, # cex controls text size
+        box.col = colours)
+# Planned
+par(mai=c(0.01,0.01,0.15,0.01))
+plotmat(main='Planned', cex.main=1.25,
+        M, name = names_planned, pos=c(1,2,2,2), curve = 0, box.cex = 1, box.lwd = 2,
+        box.size = sizes, box.prop=props, arr.pos = 0.5, box.type = 'rect', arr.type = 'triangle', arr.length = 0.2, arr.width = 0.3, cex=0.25, # cex controls text size
+        box.col = colours)
+invisible(dev.off())
+```
+
+
+```{r, include=FALSE}
+layout(1) # return to one plot
+### now just at risk patients ###
+baseline = filter(baseline, 
+                  at_risk == 'At risk', # must be at risk ...
+                  baseline_screening_complete == 'Yes', # ... with baseline screening complete
+                  #                  complete_456 == 'Yes', # at least one 4,5,6 form complete - do not condition on this
+                  !is.na(at_risk))
+# knock out patients not at risk:
+ids = unique(baseline$participant_id)
+clinicianled_review = filter(clinicianled_review, participant_id%in%ids) 
+care_directive = filter(care_directive, participant_id%in%ids)
+palliative_care_referral = filter(palliative_care_referral, participant_id%in%ids)
+
+## work out numbers per week
+planned = filter(baseline, spict_unplan_hosp == 'No')
+unplanned = filter(baseline, spict_unplan_hosp == 'Yes')
+n_total_planned = nrow(planned)
+n_total_unplanned = nrow(unplanned)
+n_weeks = floor(as.numeric(max(baseline$admission_date, na.rm=TRUE) - min(baseline$admission_date, na.rm=TRUE))/7)
+```
+
+The `r n_total_planned` planned and `r n_total_unplanned` unplanned patients at risk were collected over `r n_weeks` weeks, which is an average of `r round(n_total_planned/n_weeks)` patients per week for planned admissions, and `r round(n_total_unplanned/n_weeks)` for unplanned.
+
+All results from now are for the `r nrow(baseline)` patients at risk and with baseline screening complete.
+
+### Presence of a documented care directive prior to this hospital admission
+
+```{r, results='asis'}
+# `change_var` is previously `care_review`; renamed because of function
+for_table = mutate(baseline, 
+                   facet = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned')) %>%
+  group_by(presence_eol_plan, facet) %>%
+  summarise(n = n()) %>%
+  group_by(facet) %>%
+  mutate(pct = round(100*prop.table(n)),
+         pct = paste(pct, '%', sep=''),
+         cell = paste(n, ' (', pct, ')', sep='')) %>%
+  select(presence_eol_plan, facet, cell) %>%
+  tidyr::spread(facet, cell) %>%
+  mutate(Planned = ifelse(is.na(Planned), '0 (0%)', Planned))
+# total row
+ns = table(baseline$spict_unplan_hosp)
+total = data.frame(presence_eol_plan='Total', 
+                   Planned = paste(ns[2], ' (100%)', sep=''), 
+                   Unplanned = paste(ns[1], ' (100%)', sep=''))
+for_table = bind_rows(for_table, total) %>%
+  rename("Presence EOL plan" = 'presence_eol_plan') 
+#
+ft = flextable(for_table) 
+ft = add_header_row(ft, values=c('','Hospital admission'), colwidths = c(1,2))
+autofit(ft)
+```
+
+# SPICT 
+
+### Ten most common combinations
+
+
+```{r, fig.height=4.1}
+# get combinations of yes responses
+yes_responses <-  dplyr::select(baseline, participant_id, spict.vars)  %>%
+  as_tibble() %>%
+  tidyr::gather(key='spict', value='response', -participant_id) %>%
+  filter(response=='Yes') %>% # just yes
+  select(-response) %>%
+  mutate(spict = nice.rename.spict(spict)  )
+# now make list from group responses
+list_resp = group_by(yes_responses, participant_id) %>%
+  summarise(spicts = list(spict))
+# add zeros
+all_ids = unique(baseline$participant_id)
+missing.ids = all_ids[all_ids %in% list_resp$participant_id == FALSE]
+zeros = as_tibble(data.frame(participant_id=missing.ids))
+list_resp = bind_rows(list_resp, zeros) %>%
+  left_join(select(baseline, participant_id, spict_unplan_hosp), by='participant_id') %>% # add in unplanned hospital
+  mutate(facet = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned'))
+# plot for planned
+planned = filter(list_resp, spict_unplan_hosp=='No')
+cplot_planned = ggplot(planned, aes(x = spicts)) +
+  geom_bar(aes(y=..count..), fill = "indianred3") +
+  g.theme +
+  ggtitle('Planned admission')+
+  xlab("") +
+  ylab("Number of patients") +
+  scale_x_upset(n_intersections = 10, n_sets=10)    # top ten
+cplot_planned
+```
+
+
+```{r, fig.height=4.1}
+# plot for unplanned
+unplanned = filter(list_resp, spict_unplan_hosp=='Yes')
+cplot_unplanned = ggplot(unplanned, aes(x = spicts)) +
+  geom_bar(aes(y=..count..), fill = "indianred3") +
+  g.theme +
+  ggtitle('Unplanned admission')+
+  xlab("") +
+  ylab("Number of patients") +
+  scale_x_upset(n_intersections = 10, n_sets=10)    # top ten
+cplot_unplanned
+# export to figure
+filename = paste('figures/', this_hospital, '/', str_remove_all(this_team, pattern='_| '), '/spict_upset_split.jpg', sep='')
+jpeg(filename, width=5.5, height=8, quality = 100, res=500, units='in')
+gridExtra::grid.arrange(cplot_planned, cplot_unplanned, nrow=2)
+invisible(dev.off())
+```
+
+### SPICT score
+
+```{r, fig.width=7, fig.height=3.25}
+to.bar = group_by(baseline, hospital, spict_unplan_hosp, spict_score) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  mutate(fill = as.factor(spict_score >= thresholds$spict_threshold),
+         facet = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned'))
+spict.bar = ggplot(data=to.bar, aes(x=spict_score, y=count, fill=fill))+ # colour bars by positive
+  xlab('SPICT score')+
+  ylab('Number of patients')+
+  scale_x_continuous(breaks=0:6)+
+  geom_bar(stat='identity')+
+  scale_fill_manual(NULL, values=c('pink','dark red'))+
+  g.theme+
+  theme(legend.position = 'none')+
+  facet_wrap(~facet)
+spict.bar
+# export to figure
+filename = paste('figures/', this_hospital, '/', str_remove_all(this_team, pattern='_| '), '/spict_bar_split.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(spict.bar)
+invisible(dev.off())
+```
+
+### Numbers positive
+
+The threshold for SPICT positive is `r thresholds$spict_threshold` or more.
+
+```{r, results='asis'}
+for_table = mutate(baseline, 
+                  `SPICT.positive` = as.numeric(spict_score >= thresholds$spict_threshold),
+                  `SPICT.positive` = factor(`SPICT.positive`, levels=0:1, labels=c('No','Yes')),
+                   facet = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned')) %>%
+  group_by(`SPICT.positive`, facet) %>%
+  summarise(n = n()) %>%
+  group_by(facet) %>%
+  mutate(pct = round(100*prop.table(n)),
+         pct = paste(pct, '%', sep=''),
+         cell = paste(n, ' (', pct, ')', sep='')) %>%
+  select(`SPICT.positive`, facet, cell) %>%
+  tidyr::spread(facet, cell) %>%
+  mutate(Planned = ifelse(is.na(Planned), '0 (0%)', Planned))
+# total row
+ns = table(baseline$spict_unplan_hosp)
+total = data.frame(SPICT.positive='Total', 
+                   Planned = paste(ns[2], ' (100%)', sep=''), 
+                   Unplanned = paste(ns[1], ' (100%)', sep=''))
+for_table = bind_rows(for_table, total) %>%
+  rename(`SPICT positive` = `SPICT.positive`)
+#
+ft = flextable(for_table) 
+ft = add_header_row(ft, values=c(' ','Hospital admission'), colwidths = c(1,2))
+autofit(ft)
+```
+
+
+\pagebreak
+
+# CriSTAL 
+
+### Ten most common combinations
+
+
+```{r, fig.height=4.1}
+# get combinations of yes responses
+yes_responses <-  dplyr::select(baseline, participant_id, cristal.vars)  %>%
+  mutate(
+    #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary - no longer using age in cristal
+    cristal_cfs_score1 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold, 'Yes', 'No'), # frailty score over 5
+    cristal_cfs_score2 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold2, 'Yes', 'No')) %>%  # frailty score over 7
+  select(-cristal_cfs_score) %>% # no longer needed
+  mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
+  as_tibble() %>%
+  tidyr::gather(key='cristal', value='response', -participant_id) %>%
+  filter(response=='Yes') %>% # just yes
+  select(-response) %>%
+  mutate(cristal = nice.rename.cristal(cristal)  )
+# now make list from group responses
+list_resp = group_by(yes_responses, participant_id) %>%
+  summarise(cristals = list(cristal))
+# add zeros
+all_ids = unique(baseline$participant_id)
+missing.ids = all_ids[all_ids %in% list_resp$participant_id == FALSE]
+zeros = as_tibble(data.frame(participant_id=missing.ids))
+# add back unplanned
+list_resp = bind_rows(list_resp, zeros) %>%
+  left_join(select(baseline, participant_id, spict_unplan_hosp), by='participant_id') # add in unplanned hospital
+# plot for planned
+planned = filter(list_resp, spict_unplan_hosp=='No')
+cplot_planned = ggplot(planned, aes(x = cristals)) +
+  geom_bar(aes(y=..count..), fill = "blue2") +
+  g.theme + 
+  xlab("") +
+  ylab("Number of patients") +
+  ggtitle('Planned admission')+
+  scale_y_continuous(breaks= pretty_breaks())+ # avoid fractions
+  scale_x_upset(n_intersections = 10, n_sets=10)  # top ten
+cplot_planned
+```
+
+
+```{r, fig.height=4.1}
+# plot for unplanned
+unplanned = filter(list_resp, spict_unplan_hosp=='Yes')
+cplot_unplanned = ggplot(unplanned, aes(x = cristals)) +
+  geom_bar(aes(y=..count..), fill = "blue2") +
+  g.theme + 
+  xlab("") +
+  ylab("Number of patients") +
+  ggtitle('Unplanned admission')+
+  scale_y_continuous(breaks= pretty_breaks())+ # avoid fractions
+  scale_x_upset(n_intersections = 10, n_sets=10)  # top ten
+cplot_unplanned
+# output
+filename = paste('figures/', this_hospital, '/', str_remove_all(this_team, pattern='_| '), '/cristal_upset_split.jpg', sep='')
+jpeg(filename, width=5.5, height=8, quality = 100, res=500, units='in')
+gridExtra::grid.arrange(cplot_planned, cplot_unplanned, nrow=2)
+invisible(dev.off())
+```
+
+### CriSTAL score 
+
+```{r, fig.width=7, fig.height=3.25}
+to.bar = group_by(baseline, hospital, spict_unplan_hosp, cristal_score) %>%
+  summarise(count = n()) %>%
+  mutate(fill = as.factor(cristal_score >= thresholds$cristal_threshold),
+         facet = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned'))
+cristal.bar = ggplot(data=to.bar, aes(x=cristal_score, y=count, fill=fill))+ # colour bars by positive
+  xlab('CriSTAL score')+
+  ylab('Number of patients')+
+  scale_x_continuous(breaks=0:10)+
+  #  scale_y_continuous()
+  geom_bar(stat='identity')+
+  scale_fill_manual(NULL, values=c('skyblue','dark blue'))+
+  g.theme+
+  theme(legend.position = 'none')+
+  facet_wrap(~facet)
+cristal.bar
+# export to figure
+filename = paste('figures/', this_hospital, '/', str_remove_all(this_team, pattern='_| '), '/cristal_bar_split.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(cristal.bar)
+invisible(dev.off())
+```
+
+### Numbers positive
+
+A CriSTAL positive score is `r thresholds$cristal_threshold` or above.
+
+```{r, results='asis'}
+for_table = mutate(baseline, 
+                  `CriSTAL.positive` = as.numeric(cristal_score >= thresholds$cristal_threshold),
+                  `CriSTAL.positive` = factor(`CriSTAL.positive`, levels=0:1, labels=c('No','Yes')),
+                   facet = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned')) %>%
+  group_by(`CriSTAL.positive`, facet) %>%
+  summarise(n = n()) %>%
+  group_by(facet) %>%
+  mutate(pct = round(100*prop.table(n)),
+         pct = paste(pct, '%', sep=''),
+         cell = paste(n, ' (', pct, ')', sep='')) %>%
+  select(`CriSTAL.positive`, facet, cell) %>%
+  tidyr::spread(facet, cell) %>%
+  mutate(Planned = ifelse(is.na(Planned), '0 (0%)', Planned))
+# total row
+ns = table(baseline$spict_unplan_hosp)
+total = data.frame(CriSTAL.positive='Total', 
+                   Planned = paste(ns[2], ' (100%)', sep=''), 
+                   Unplanned = paste(ns[1], ' (100%)', sep=''))
+for_table = bind_rows(for_table, total) %>%
+  rename(`CriSTAL positive` = `CriSTAL.positive`)
+#
+ft = flextable(for_table) 
+ft = add_header_row(ft, values=c(' ','Hospital admission'), colwidths = c(1,2))
+autofit(ft)
+```
+
+
+\pagebreak
+
+# Outcomes
+
+The results below exclude those with incomplete follow-up forms.
+
+```{r, results = 'asis'}
+## prepare data for table and graph
+outcome_data = bind_rows(clinicianled_review,
+                      care_directive,
+                      palliative_care_referral, .id='outcome') %>%
+  left_join(select(baseline, participant_id, spict_unplan_hosp), by='participant_id') %>% # add back unplanned adm
+  select(outcome, change_var, spict_unplan_hosp) %>%
+  filter(!is.na(change_var)) %>% # remove few missing
+  mutate(outcome = factor(as.numeric(outcome), levels=1:3,
+                          labels=c('Clinician-led care review discussion','Review of any care directives','Referred to palliative care')),
+        Admission = ifelse(spict_unplan_hosp=='Yes', 'Unplanned', 'Planned'))
+
+## now make table
+one_table = group_by(outcome_data, outcome, Admission, change_var) %>%
+  summarise(n = n()) %>%
+  group_by(outcome, Admission) %>%
+  mutate(pct = round(100*prop.table(n)),
+         pct = paste(pct, '%', sep=''),
+         cell = paste(n, ' (', pct, ')', sep='')) %>%
+  select(outcome, Admission, change_var, cell) %>%
+  group_by(outcome, Admission) %>%
+  tidyr::spread(change_var, cell) %>%
+  mutate(Prior = ifelse(is.na(Prior), '0 (0%)', Prior),
+         Yes = ifelse(is.na(Yes), '0 (0%)', Yes))
+# total row
+#ns = table(baseline$spict_unplan_hosp)
+#total = data.frame(outcome='Total', 
+#                   Planned = paste(ns[2], ' (100%)', sep=''), 
+#                   Unplanned = paste(ns[1], ' (100%)', sep=''))
+#for_table = bind_rows(for_table, total) %>%
+#  rename(Outcome = outcome)
+#
+ft = flextable(one_table) 
+#my_border = fp_border(color="black", style="dotted", width=1) # trying to get inner border
+#ft = border_inner(ft, i=4, border=my_border)
+autofit(ft)
+```
+
+"Prior" is prior to this admission. The cells are the numbers and row percentages.
+
+### Bar-plot of the three outcomes (patient numbers and percentages)
+
+```{r, fig.width=7,eight=4}
+#
+stats = group_by(outcome_data, Admission, outcome, change_var) %>%
+  summarise(n = n()) %>%
+  group_by(Admission, outcome) %>%
+  mutate(pct = round(100*prop.table(n)),
+         pct = paste(pct, '%'))
+# plot
+cplot = ggplot(data=outcome_data, aes(x=change_var, fill=change_var))+
+  geom_bar()+
+  scale_fill_manual(NULL, values=c("#66CDAA", "#1C86EE", "#C1CDCD"))+
+  xlab('')+
+  ylab('Number of patients')+
+  g.theme +
+  geom_text(data=stats, aes(x=change_var, y=n, label=pct), col=grey(0.1), nudge_y=1)+ # nudge to push text onto bars
+  facet_grid(Admission ~ outcome)+
+  theme(legend.position = 'none')
+cplot
+filename = paste('figures/', this_hospital, '/', str_remove_all(this_team, pattern='_| '), '/outcomes_bar_split.jpg', sep='')
+jpeg(filename, width=7, height=6, quality = 100, res=500, units='in', bg='transparent')
+print(cplot)
+invisible(dev.off())
+```
+
+

@@ -1,7 +1,9 @@
 # 0_checks.R
 # checks of data processing
-# Sep 2020
+# Nov 2020
+library(openxlsx)
 library(dplyr)
+library(stringr)
 load('data/FullData.RData') # from 0_read_data.R
 
 ## Random checks for Chris to compare processed data with REDCap data
@@ -39,39 +41,65 @@ p_check = bind_rows(r1, r2, r3) %>%
 all_check = bind_rows(d_check, c_check, p_check) %>%
   select(form, participant_id, form_date, outcome_date, time_change, change_var) %>%
   arrange(form, change_var, participant_id)
-write.csv(all_check, file='check_outcomes.csv', quote=FALSE, row.names = FALSE)
+write.csv(all_check, file='checks/check_outcomes.csv', quote=FALSE, row.names = FALSE)
+
+## checks for Gold Coast
+# list of those prior
+r3 = filter(care_directive, redcap_version==3, change_var=='Prior', hospital=='GCUH') %>%
+  select(-redcap_version, -hospital, -index, -strings, -int_time, -change_var) %>%
+  mutate(participant_id = as.numeric(str_remove_all(string=participant_id, 'GCUH_V3_'))) %>%
+  arrange(participant_id)
+## output to excel
+hs1 <- createStyle(fgFill = "black", textDecoration = "Bold", fontColour = "white") # header style
+wb <- createWorkbook("Barnett")
+addWorksheet(wb, sheetName = "Prior Gold coast")
+writeData(wb, sheet=1, x=r3, headerStyle = hs1)
+setColWidths(wb, sheet = 1, cols = 1:10, widths = "auto")
+saveWorkbook(wb, file = "checks/GCUH_prior.xlsx", overwrite = TRUE)
 
 
 ### No longer working from here: to fix when I get time ###
 
-problems = function(){
-  
-  ## # quick checks of times - could just be data issue (longer than 120 minutes or negative time)
-  problems = bind_rows(baseline, care_directive) %>% # use all forms with times
-    select("participant_id",'hospital', starts_with('time_')) %>%
-    tidyr::gather(value='minutes', key='form', -"participant_id", -"hospital") %>%
-    filter(minutes<0 | minutes>120) %>%
-    left_join(baseline, by=c("participant_id",'hospital')) %>%
-    mutate(start = NA,
-           start = ifelse(minutes == time_hosp, start_date_time_hosp, start),
-           start = ifelse(minutes == time_dem, start_date_time_dem, start),
-           start = ifelse(minutes == time_funct, start_date_time_funct, start),
-           end = NA,
-           end = ifelse(minutes == time_hosp, end_date_time_hosp, end),
-           end = ifelse(minutes == time_dem, end_date_time_dem, end),
-           end = ifelse(minutes == time_funct, end_date_time_funct, end)) %>%
-    select("participant_id",'hospital', 'form', 'minutes', 'start', 'end') %>%
-    mutate(start = as.POSIXct(as.numeric(start), origin='1970-01-01'), # need to convert to dates and times
-           end = as.POSIXct(as.numeric(end), origin='1970-01-01'),
-           form = case_when(form=='time_hosp' ~ 'Hospital admissions',
-                            form=='time_dem' ~ 'Patient demographics',
-                            form=='time_funct' ~ 'Functional status',
-                            form=='time_comorb' ~ 'Comorbidities',
-                            form=='time_4' ~ 'Clinician-led review discussion',
-                            form=='time_5' ~ 'Care directive measure',
-                            form=='time_6' ~ 'Palliative care referral',
-                            form=='time_dcharg' ~ 'Screening completion'))
-  if(nrow(problems)>0){
-    write.csv(problems, file='checks/date_checks.csv', quote=FALSE, row.names = FALSE)
-  }
-}
+## # quick checks of times - could just be data issue (longer than 120 minutes or negative time)
+care_directive = rename(care_directive, 'time_4' = 'time_change') # have to rename as they all use same name
+clinicianled_review = rename(clinicianled_review, 'time_5' = 'time_change')
+palliative_care_referral = rename(palliative_care_referral, 'time_6' = 'time_change')
+problems = bind_rows(baseline, care_directive, clinicianled_review, palliative_care_referral) %>% # use all forms with times
+  select("participant_id",'hospital', starts_with('time_')) %>%
+  filter(str_detect(string=participant_id, pattern='_V3_')) %>% # just version 3
+  tidyr::gather(value='minutes', key='form', -"participant_id", -"hospital") %>%
+  filter(!is.na(minutes), # lots of missing because of lack of overlap (not true missing)
+    minutes<0 | minutes>120) %>%
+  mutate(
+    num = as.numeric(str_remove_all(string=participant_id, pattern='[A-Z][A-Z][A-Z][A-Z]_V3_')),
+    minutes = round(minutes*10)/10, # round
+    form = case_when(form=='time_hosp' ~ 'Hospital admissions',
+                          form=='time_dem' ~ 'Patient demographics',
+                          form=='time_funct' ~ 'Functional status',
+                          form=='time_comorb' ~ 'Comorbidities',
+                     form=='time_4' ~ 'Clinician-led review discussion',
+                          form=='time_5' ~ 'Care directive measure',
+                          form=='time_6' ~ 'Palliative care referral',
+                          form=='time_dcharg' ~ 'Screening completion')) %>%
+  arrange(hospital, num) %>%
+  select(-num)
+
+## output to excel
+wb <- createWorkbook("Barnett")
+#
+addWorksheet(wb, sheetName = "GCUH")
+f = filter(problems, hospital=='GCUH')
+writeData(wb, sheet=1, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 1, cols = 1:4, widths = "auto")
+#
+addWorksheet(wb, sheetName = "TPCH")
+f = filter(problems, hospital=='TPCH')
+writeData(wb, sheet=2, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 2, cols = 1:4, widths = "auto")
+#
+addWorksheet(wb, sheetName = "RBWH")
+f = filter(problems, hospital=='RBWH')
+writeData(wb, sheet=3, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 3, cols = 1:4, widths = "auto")
+#
+saveWorkbook(wb, file = "checks/time_checks.xlsx", overwrite = TRUE)
