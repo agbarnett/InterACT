@@ -39,8 +39,8 @@ nice.rename.cristal = function(x, line_breaks=FALSE){
     y = case_when(
     x == 'cristal_admit_ed' ~ 'Admitted via ED',
     x == 'cristal_admit_source' ~ 'From nursing home',
-    x == 'age' ~ 'Age over 75',
-    x == 'pt_age' ~ 'Age over 75',
+    x == 'age' ~ 'Age over 75', # not needed as all over 75, kept just in case
+    x == 'pt_age' ~ 'Age over 75', # not needed as all over 75, kept just in case
     x == 'cristal_previous_admit' ~ 'Previous hospitalisation',
     x == 'cristal_icu' ~ 'ICU admission',
     x == 'cristal_cfs_score' ~ 'Frailty score', ## overall CFS score
@@ -69,8 +69,8 @@ nice.rename.cristal = function(x, line_breaks=FALSE){
     y = case_when(
       x == 'cristal_admit_ed' ~ 'Admitted\nvia ED',
       x == 'cristal_admit_source' ~ 'From nursing\nhome',
-      x == 'age' ~ 'Age over\n75',
-      x == 'pt_age' ~ 'Age over\n75',
+      x == 'age' ~ 'Age over\n75', # not needed as all over 75, kept just in case
+      x == 'pt_age' ~ 'Age over\n75', # not needed as all over 75, kept just in case
       x == 'cristal_previous_admit' ~ 'Previous\nhospitalisation',
       x == 'cristal_icu' ~ 'ICU\nadmission',
       x == 'cristal_cfs_score' ~ 'Frailty\nscore', ## overall CFS score
@@ -193,7 +193,7 @@ time_to_first = function(form,
   
   ## get censoring dates and add dates to all patients
   # i) censoring of those still in hospital at change-over time
-  # ii) censoring of end of the intervention exposure
+  # ii) censoring at end of the intervention exposure (by hospital)
   load('data/date_changes.RData') # 0_date_changes.R
   complete_d = select(complete, participant_id, hosp_discharge_date) # small data set for merging below
   censor_dates = select(date_changes, hospital, date_intervention, date_post) %>% # keep dates for intervention and end of intervention
@@ -204,7 +204,7 @@ time_to_first = function(form,
     select(participant_id, hosp_discharge_date, date_intervention, date_post) %>%
     tidyr::gather(`date_intervention`,`date_post`, key='change_var', value='form_date', -`participant_id`, -`hosp_discharge_date`) %>% # names to match REDCap data
     unique() %>% # just one set of dates per patient
-    filter(form_date < hosp_discharge_date) %>% # only if censoring occured before discharge
+    filter(form_date < hosp_discharge_date) %>% # only if censoring occurred before discharge
     select(-hosp_discharge_date) # no longer needed
 
   ## get dates of `yes` and `no` from forms
@@ -212,7 +212,7 @@ time_to_first = function(form,
     filter(!is.na(form_date),
            !is.na(change_var)) # remove small amount with missing data
   
-  ## in-hospital death date, to do. Only deaths in hospital during the same admission
+  ## in-hospital death date, to do. Only deaths in hospital during the same admission. not collected this data
   # death_date = select()
   
   # find first yes
@@ -238,7 +238,7 @@ time_to_first = function(form,
     filter(!participant_id %in% unique(first_yes$participant_id), # not any patient with a yes, because 'yes' always beats 'no'
            !participant_id %in% unique(first_censored$participant_id)) # not any patient with a censored, because 'censored' always beats 'no'
   
-  ## combine all dates (add death date here once it is available)
+  ## combine all dates (add death date here if it becomes available)
   all_dates = bind_rows(first_yes, last_no, first_censored) %>%
     arrange(participant_id, form_date) %>%
     group_by(participant_id) %>%
@@ -265,7 +265,7 @@ time_to_first = function(form,
   # i) additional step for prior for outcome 4 only
   if(change_var=='care_review'){
     ## add back  information
-    form_details = select(form, 'participant_id','redcap_version','form_date', starts_with('care_review_'))
+    form_details = select(form, 'participant_id','hospital','redcap_version','form_date', starts_with('care_review_'))
     final_data = left_join(final_data, form_details, by=c('participant_id','form_date')) %>%
       unique() # overcome odd error of one patient being merged twice
   }
@@ -274,7 +274,7 @@ time_to_first = function(form,
   if(change_var=='change_5'){
     
     ## add back care directive information
-    form_details = select(form, 'participant_id','redcap_version','form_date', starts_with('type_care_'), 'care_directive_other','tracker')
+    form_details = select(form, 'participant_id','hospital','redcap_version','form_date', starts_with('type_care_'), 'care_directive_other','tracker')
     final_data = left_join(final_data, form_details, by=c('participant_id','form_date')) %>%
       unique() # overcome odd error of one patient being merged twice
     ## TO DO, replace this with analysis done by hand ##
@@ -308,7 +308,7 @@ time_to_first = function(form,
     final_data = bind_rows(final_data, any_prior)
     
     ## add back information
-    form_details = select(form, 'participant_id','redcap_version','form_date') # not much to add
+    form_details = select(form, 'participant_id','hospital','redcap_version','form_date') # not much to add
     final_data = left_join(final_data, form_details, by=c('participant_id','form_date')) %>%
       unique() # overcome odd error of one patient being merged twice
     
@@ -332,9 +332,9 @@ time_to_first = function(form,
 circular_plots = function(indata){
   # create date/time variables
   to_plot = filter(indata, change_var == 'Yes') %>% # just where there was an outcome
-    mutate(dow =format(outcome_date, '%w'),
+    mutate(dow = format(outcome_date, '%w'),
            dow = factor(dow, levels=0:6, labels=c('Sun','Mon','Tue','Wed','Thu','Fri','Sat')),
-           hour =as.numeric(format(outcome_date, '%H')),
+           hour = as.numeric(format(outcome_date, '%H')),
            missing = substr(outcome_date, 12, 16) %in% c('00:00','23:59'), # two dummy times for missing
            missing = ifelse(is.na(outcome_date)==TRUE, TRUE, missing),
            hour = ifelse(missing==TRUE, NA, hour)) %>% # blank hour if it's missing
@@ -390,6 +390,7 @@ nice_rename = function(invar){
     str_detect(invar, pattern='age/5') == TRUE ~ "Age (+5 years)",
     str_detect(invar, pattern='pt_sexFemale') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='pt_sexUnknown') == TRUE ~ "Sex (Unknown)",
+    str_detect(invar, pattern='int_timeIntervention') == TRUE ~ "Intervention",
     TRUE ~ invar
   )
   return(invar)

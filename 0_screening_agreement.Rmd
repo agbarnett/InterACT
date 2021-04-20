@@ -18,29 +18,84 @@ options(scipen=999) # avoid scientific presentation
 library(dplyr)
 library(tidyr)
 library(janitor)
-library(ggplot2)
+library(flextable)
 library(irrCAC)
 library(ordinal)
+library(toOrdinal) # for 1st, 2nd, etc
+library(ggplot2)
+theme_set(theme_bw())
 
-# get the data, from an agreement exercise
-library(readxl)
-data = read_excel('data/InterACTV3IRR-BaselineScreening_V2.xlsx', sheet=2) %>%
-  select(-`REDCap ID`, -`CFS score`, -`CriSTAL 1`, -`CriSTAL 2`) %>% # remove a few variables
-  clean_names() %>%
-  filter(!is.na(auditor)) # remove missing rows
+exercise = 2 # which agreement exercise is this
 
-# categorical and continuous variables
+if (exercise==1){
+  # get the data, from the first agreement exercise
+  library(readxl)
+  data = read_excel('data/reliability/InterACTV3IRR-BaselineScreening_V2.xlsx', sheet=2) %>%
+    select(-`REDCap ID`, -`CFS score`, -`CriSTAL 1`, -`CriSTAL 2`) %>% # remove a few variables
+    clean_names() %>%
+    filter(!is.na(auditor)) # remove missing rows
+  # categorical and continuous variables
 cat_vars = names(select(data, -auditor, -case_study, -cfs, -"total_cri_stal", -'spict_score')) # list of all categorical variables 
 cont_vars = names(select(data, 'cfs', "total_cri_stal", 'spict_score'))
 
-# loop through categorical varables
-results =  NULL
-for (v in cat_vars){
-columns = select(data, case_study, auditor, v) %>%
-  group_by( case_study) %>%
-  spread(value=v, key=auditor) %>% # subject = rows, raters=columns
+}
+
+if (exercise == 2){
+  # auditor and case study info
+  auditor = read.table(header=T, stringsAsFactors = FALSE, sep=',', text='
+participant_id,auditor,hospital,case_study
+1,Christine,GCUH,5
+2,Christine,GCUH,6
+3,Rebecca,RBWH,5
+4,Rebecca,RBWH,6
+5,Vincent,GCUH,5
+6,Vincent,GCUH,6
+7,Saroeun,TPCH,6
+9,Saroeun,TPCH,5
+8,Mark,TPCH,5
+10,Mark,TPCH,6
+11,Avalon,RBWH,5
+12,Avalon,RBWH,6
+13,Carly,TPCH,5
+14,Carly,TPCH,6
+15,Mary,RBWH,5
+16,Mary,RBWH,6')
+
+# get the data from REDCap for the second agreement exercise (from export from REDCAP)
+setwd('U:/Research/Projects/ihbi/aushsi/interact/Rstuff/data/reliability') # move to folder
+source("InterACTV4IRR_R_2020-10-06_1440.r") # run the file from REDCap
+raw = data
+remove(data)
+setwd('U:/Research/Projects/ihbi/aushsi/interact/Rstuff') # move back
+# refine data
+data = filter(raw, 
+              redcap_event_name =='baseline_screening_arm_1') %>% # remove forms not completed
+  select(participant_id, ends_with('factor'),'total_spict_pipe','total_cristal_pipe') %>%
+  mutate(participant_id = as.integer(participant_id)) %>% # for merge
+  rename_at(vars(ends_with("factor")), funs(stringr::str_replace(.,".factor",""))) %>% # rename factors
+  mutate_if(is.factor, function(x) as.character(x)) %>% # transform factors to characters
+  left_join(auditor, by='participant_id') # add auditor
+
+# categorical and continuous variables
+cat_vars = c('cristal_admit_ed','cristal_admit_source','cristal_previous_admit','cristal_icu','cristal_icu_current','cristal_gcs','cristal_sbp','cristal_resp','cristal_hr','cristal_02','cristal_bgl','cristal_seizures','cristal_urine','cristal_cancer','cristal_proteinuria','cristal_ckd','cristal_ecg','cristal_ami','cristal_chf','cristal_copd','cristal_cognitive','cristal_stroke','cristal_liver','spict_unplan_hosp','spict_perform_status','spict_care_others','spict_weight_loss','spict_persist_sympt','spict_care_focus','total_spict_pipe','total_cristal_pipe') # list of all categorical variables 
+cont_vars = c('cristal_cfs_score', "total_cristal_score", 'spict_score')
+}
+```
+
+```{r, include=FALSE}
+# function to extract specific variable (also used below)
+agreement_data = function(indata, var){
+  columns = select(indata, case_study, auditor, var) %>%
+  group_by(case_study) %>%
+  spread(value=var, key=auditor) %>% # subject = rows, raters=columns
   ungroup() %>%
   select(-case_study)
+  return(columns)
+}
+# loop through categorical variables
+results =  NULL
+for (v in cat_vars){
+  columns = agreement_data(indata=data, var=v)
   # pa = pa.coeff.raw(columns) # percent agreement
   gwet = gwet.ac1.raw(columns)$est
   frame = data.frame(var=v, agreement = gwet$coeff.val, CI = gwet$conf.int, type=1)
@@ -60,9 +115,15 @@ columns = select(data, case_study, auditor, v) %>%
 results = arrange(results, agreement) %>% # arrange from high to low agreement
   mutate(xaxis = 1:n(),
          xaxis = factor(xaxis, levels=1:n(), labels=var),
-         score = as.numeric(var %in% c("cri_stal_risk","spict_status"))+1,
-         score = factor(score))
+         score = as.numeric(var %in% c("total_cristal_pipe","total_spict_pipe"))+1,
+         score = factor(score)) %>%
+  filter(!is.na(agreement)) # remove few missing
+# numbers for text
+spict_agreement = round(filter(results, type==2, var=='total_cristal_pipe')$agreement,2)
+cristal_agreement = round(filter(results, type==2, var=='total_spict_pipe')$agreement,2)
 ```
+
+This is the `r toOrdinal(exercise)` reliability exercise.
 
 There are `r nrow(data)` observations from `r length(unique(data$auditor))` auditors.
 
@@ -74,7 +135,6 @@ cat_plot = ggplot(data=results, aes(x=xaxis, y=agreement, col=score, shape=facto
   scale_shape_manual('`No` and `Unknown`', values=c(4,0), labels=c('Separate','Combined'))+
   scale_color_manual('CRiSTAL/SPICT', values=c('black','red'), labels=c('No','Yes'))+
   coord_flip()+
-  theme_bw()+
   xlab('')+
   ylab('Agreement')+
   theme(
@@ -83,16 +143,88 @@ cat_plot = ggplot(data=results, aes(x=xaxis, y=agreement, col=score, shape=facto
 cat_plot
 ```
 
-The results are ordered from low to high agreement. We use Gwet's agreement statistic [@Wongpakaran2013]. An agreement of one is perfect positive agreement and zero is no agreement. The two key positive/negative classifications of CRiSTAL and SPICT are shown in red.
+The results are ordered from low to high agreement. We use Gwet's agreement statistic [@Wongpakaran2013]. An agreement of one is perfect positive agreement and zero is no agreement. The two key positive/negative classifications of CRiSTAL and SPICT are shown in red. The agreement was `r cristal_agreement` for CRiSTAL and `r spict_agreement` for SPICT.
 
 We run two versions of the agreement statistics. One where the answers "no" and "unknown" are kept as separate answers, and one where they are "combined". This is because "no" and "unknown" have the same implication for the CRiSTAL and SPICT scores.
+
+## Details on the variables with poor agreement
+
+In the tables below the two rows are the two case studies, and the columns are the auditors.
+
+Most of the differences are between "No" and "Unknown".
+
+##### CRiSTAL proteinuria
+
+```{r}
+columns = agreement_data(indata=data, var='cristal_proteinuria')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### CRiSTAL urine
+
+```{r}
+columns = agreement_data(indata=data, var='cristal_urine')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### CRiSTAL COPD
+
+```{r}
+columns = agreement_data(indata=data, var='cristal_copd')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### CRiSTAL ECG
+
+```{r}
+columns = agreement_data(indata=data, var='cristal_ecg')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### SPICT performance status
+
+```{r}
+columns = agreement_data(indata=data, var='spict_perform_status')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### SPICT persistent symptoms
+
+```{r}
+columns = agreement_data(indata=data, var='spict_persist_sympt')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### SPICT care others
+
+```{r}
+columns = agreement_data(indata=data, var='spict_care_others')
+ftab = flextable(columns)
+autofit(ftab)
+```
+
+##### SPICT weight loss
+
+```{r}
+columns = agreement_data(indata=data, var='spict_weight_loss')
+ftab = flextable(columns)
+autofit(ftab)
+```
 
 ## Agreement coefficients for continuous variables
 
 ```{r}
+if(exercise==1){ # Only works for exercise 1
 results_cont = NULL
 for (v in cont_vars){
-  long = select(data, case_study, auditor, v) 
+  long = select(data, case_study, auditor, v) %>%
+    na.omit() # remove all missing
   formula = paste('as.factor(', v, ')~ -1 + (1|case_study) + (1|auditor)', sep = '')
   model1 <- clmm(formula , link = "probit", threshold = "flexible", data=long)
   var_u = as.numeric(model1$ST$case_study^2) # subjects
@@ -104,19 +236,21 @@ frame = data.frame(var=v, rho=rho)
 results_cont = arrange(results_cont, rho) %>% # arrange from high to low rho
   mutate(xaxis = 1:n(),
          xaxis = factor(xaxis, levels=1:n(), labels=var))
+} # end of if
 ```
 
 ```{r, fig.height=3}
+if(exercise==1){ # Only works for exercise 1
 cont_plot = ggplot(data=results_cont, aes(x=xaxis, y=rho))+
   geom_point(size=4)+
   coord_flip()+
-  theme_bw()+
   xlab('')+
   ylab('Agreement (rho)')+
   scale_y_continuous(limits=c(0,1))+
   theme(
     panel.grid.minor.x = element_blank())
 cont_plot
+}
 ```
 
 The three continuous variables need a different agreement statistic. We use the ordinal method described in @Nelson15. 

@@ -104,3 +104,4 @@ ftab = flextable(at_risk_transfer) %>%
   autofit()
   
 }
+transfer()

@@ -1,7 +1,6 @@
-# 0_read_data_redcap.R
 # read the data from redcap using the export function from REDCap
 # Use all three versions of REDCAP databases
-# November 2020
+# February 2021
 library(readxl)
 library(tidyr)
 library(dplyr)
@@ -43,7 +42,7 @@ for (this in d){
   data = clean_names(data) %>%
     mutate(hospital = hosp,
            redcap_version = version) %>%
-    select(-ends_with('_complete'))
+    select(-ends_with('_complete')) # need this now
   # remove labels as this was causing errors with slightly different labels in concatenation
   data = mutate_all(data, clear.labels)
   ## fix team variable
@@ -123,7 +122,19 @@ all_data = anti_join(all_data, knock.out, by=c('participant_id','hospital','redc
 # b) remake ID to include hospital and version
 all_data = mutate(all_data, participant_id = paste(hospital, '_V', redcap_version, '_', participant_id, sep='')) # to avoid overlapping numbers
 
+# c) remove patients where the admission was before the re-start
+to_remove = filter(all_data, redcap_version==3, redcap_event_name == 'baseline_screening_arm_1') %>%
+  mutate(admission_date = as.Date(admission_date)) %>%
+  select(participant_id, admission_date) %>%
+  filter(admission_date < as.Date('2020-05-25')) %>%
+  pull(participant_id)
+#
+cat('There were ', length(to_remove), ' removed as their admission was before the re-start.\n', sep='')
+all_data = filter(all_data, !participant_id %in% to_remove)
+
+
 ## Section 1: split into data sets that match REDCap forms ##
+# to do, convert covid19_date, but very few so far
 ## a) study completion
 complete = filter(all_data, redcap_event_name_factor == 'Study completion') %>%
   select("participant_id",'hospital','redcap_version',
@@ -190,6 +201,7 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
   mutate(
     int_hosp_trans = factor(int_hosp_trans, levels=1:3, labels=c('Yes',"No",'Unknown')),
     # tidy up URN:
+    urn = str_remove_all(urn, pattern='^   |^  |^ '), # remove starting spaces
     urn = ifelse(str_detect(urn, pattern='^[A-Z|a-z]')==TRUE, str_sub(urn, 2, nchar(urn)), urn), # remove starting letter
     # admission time and date:
     hour = as.numeric(str_sub(admission_date, 12, 13)), # extract from text
@@ -247,8 +259,8 @@ form_dates = select(baseline, participant_id,
   mutate(datetime = as.numeric(datetime)) %>% # convert to number
   filter(!is.na(datetime))  # remove missing
 median = group_by(form_dates, participant_id) %>% # 
-  summarise(median_form = min(datetime), # median time, excludes outliers
-            range = max(datetime)-min(datetime)) %>% # look for unusual variance
+  summarise(median_form = median(datetime), # median time, excludes outliers
+            range = max(datetime)-median(datetime)) %>% # look for unusual variance
   ungroup()
 ## check form dates ##
 check = filter(median, range > 5*24*60*60) %>% # longer than 5 days between earliest and latest form
@@ -264,6 +276,9 @@ baseline = left_join(baseline, median, by='participant_id') %>%
   select(-range) # no longer needed
 # everyone should have a date, so should be nobody
 missing_date = filter(baseline, is.na(median_form))
+if(nrow(missing_date)>0){
+  cat('Warning missing date for ', missing_date$participant_id,'.\n',sep='')
+}
 
 # convert form completion time differences to numbers
 baseline = mutate(baseline, 
@@ -273,13 +288,18 @@ baseline = mutate(baseline,
                   time_comorb = (as.numeric(end_date_time_comorb) - as.numeric(start_date_time_comorb))/60,
 ) 
 
-# add complete to baseline
+# add complete to baseline and change at-risk if baseline not complete
 completed = filter(complete, screening_completion_complete == 'Complete')
 baseline = mutate(baseline, 
                   baseline_screening_complete = as.numeric(participant_id %in% completed$participant_id),
                   baseline_screening_complete = ifelse(continue_456=='Yes', 1, baseline_screening_complete), # also if continue to forms 456 is positive
                   baseline_screening_complete = ifelse(is.na(baseline_screening_complete)==TRUE, 0, baseline_screening_complete), # replace missing
-                  baseline_screening_complete = factor(baseline_screening_complete, levels=0:1, labels=c('No','Yes')))
+                  baseline_screening_complete = factor(baseline_screening_complete, levels=0:1, labels=c('No','Yes'))) %>%
+  mutate(at_risk = ifelse(baseline_screening_complete=="No", 1, at_risk), # not at risk if baseline screening not complete (likely left hospital); changed 12-dec-2020
+         at_risk = factor(at_risk, levels=1:2, labels=c('Not at risk','At risk'))) # have to reformat factor
+# minor change to at-risk
+baseline = mutate(baseline, at_risk = ifelse(baseline_screening_complete=="No", 1, at_risk), # not at risk if baseline screening not complete (likely left hospital); changed 12-dec-2020
+                  at_risk = factor(at_risk, levels=1:2, labels=c('Not at risk','At risk'))) # have to reformat factor
 
 # consistently format dates
 baseline = select(baseline, -starts_with('start_date_time'), -starts_with('end_date_time')) %>% # do not need these date/time variables
@@ -310,7 +330,8 @@ clinicianled_review = filter(all_data, redcap_repeat_instrument == 'clinicianled
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) %>% # remove _factor from variable names
   mutate(care_review_type = as.character(care_review_type), # fix one category label
          care_review_type = ifelse(care_review_type=='patient and clinician only', 'Patient and clinician only', care_review_type),
-         care_review_type = factor(care_review_type))
+         care_review_type = factor(care_review_type),
+         care_review_type_other = ifelse(care_review_type_other=='', NA, care_review_type_other)) # make missing
 # format date/times
 for (k in 1:nrow(clinicianled_review)){
   clinicianled_review$start_date_time_4[k] = ifelse(clinicianled_review$start_date_time_4[k]=='', NA, as.POSIXct(clinicianled_review$start_date_time_4[k], tz='Australia/Brisbane'))
@@ -344,6 +365,7 @@ care_directive = filter(all_data, redcap_repeat_instrument == 'care_directive_me
          "type_care_directive_3_factor", "type_care_directive_4_factor", "type_care_directive_5_factor",
          "type_care_directive_6_factor", "type_care_directive_7_factor", "type_care_directive_8_factor",
          'care_directive_other','tracker_factor') %>%
+  mutate(care_directive_other = ifelse(care_directive_other=='', NA, care_directive_other)) %>% # make empty missing
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) # remove _factor from variable names
 for (k in 1:nrow(care_directive)){
   care_directive$start_date_time_5[k] = ifelse(care_directive$start_date_time_5[k]=='', NA, as.POSIXct(care_directive$start_date_time_5[k], tz='Australia/Brisbane'))

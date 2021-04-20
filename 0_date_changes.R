@@ -14,6 +14,9 @@ GCUH,2020-05-25,2021-01-18,2021-02-15,2021-06-07,2021-08-29') %>%
   gather(key='event', value='date', -`hospital`) %>%
   mutate(date = as.Date(date))
 
+# date_intervention = date of change over to intervention
+# date_post = end of follow-up?
+
 # quick check
 check_plot = ggplot(data=date_changes, aes(x=hospital, y=date, col=factor(event)))+
   geom_point(size=5)+

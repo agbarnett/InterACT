@@ -4,7 +4,7 @@
 library(openxlsx)
 library(dplyr)
 library(stringr)
-load('data/FullData.RData') # from 0_read_data.R
+load('data/FullData.RData') # from 0_read_data_redcap.R
 
 ## Random checks for Chris to compare processed data with REDCap data
 # a) care directive
@@ -56,33 +56,6 @@ addWorksheet(wb, sheetName = "Prior Gold coast")
 writeData(wb, sheet=1, x=r3, headerStyle = hs1)
 setColWidths(wb, sheet = 1, cols = 1:10, widths = "auto")
 saveWorkbook(wb, file = "checks/GCUH_prior.xlsx", overwrite = TRUE)
-
-
-### No longer working from here: to fix when I get time ###
-
-## # quick checks of times - could just be data issue (longer than 120 minutes or negative time)
-care_directive = rename(care_directive, 'time_4' = 'time_change') # have to rename as they all use same name
-clinicianled_review = rename(clinicianled_review, 'time_5' = 'time_change')
-palliative_care_referral = rename(palliative_care_referral, 'time_6' = 'time_change')
-problems = bind_rows(baseline, care_directive, clinicianled_review, palliative_care_referral) %>% # use all forms with times
-  select("participant_id",'hospital', starts_with('time_')) %>%
-  filter(str_detect(string=participant_id, pattern='_V3_')) %>% # just version 3
-  tidyr::gather(value='minutes', key='form', -"participant_id", -"hospital") %>%
-  filter(!is.na(minutes), # lots of missing because of lack of overlap (not true missing)
-    minutes<0 | minutes>120) %>%
-  mutate(
-    num = as.numeric(str_remove_all(string=participant_id, pattern='[A-Z][A-Z][A-Z][A-Z]_V3_')),
-    minutes = round(minutes*10)/10, # round
-    form = case_when(form=='time_hosp' ~ 'Hospital admissions',
-                          form=='time_dem' ~ 'Patient demographics',
-                          form=='time_funct' ~ 'Functional status',
-                          form=='time_comorb' ~ 'Comorbidities',
-                     form=='time_4' ~ 'Clinician-led review discussion',
-                          form=='time_5' ~ 'Care directive measure',
-                          form=='time_6' ~ 'Palliative care referral',
-                          form=='time_dcharg' ~ 'Screening completion')) %>%
-  arrange(hospital, num) %>%
-  select(-num)
 
 ## output to excel
 wb <- createWorkbook("Barnett")

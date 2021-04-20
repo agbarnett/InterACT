@@ -62,27 +62,7 @@ scramble = FALSE #
 
 This document contains the statistical analyses for the InterACT study. The initial document was produced using a scrambled intervention group by randomly assigning participants to intervention or control periods. This allowed us to finalise the statistical analyses plan and ensure that all investigators understood the analyses before the real intervention was used.
 
-```{r scramble, include=FALSE}
-# scramble from now on
-if(scramble==TRUE){
-  min_date = as.numeric(as.POSIXct('2020-05-25 00:00', tz='Australia/Brisbane')) # start of usual care
-  max_date = as.numeric(as.POSIXct('2021-06-06 00:00', tz='Australia/Brisbane')) # end of intervention
-  set.seed(123456)
-  baseline = select(baseline, -'int_time') %>% # remove old time
-    mutate(
-      median_form = runif(min=min_date, max=max_date, n=nrow(baseline)), # random from earliest start till 400 days plus
-    median_form = as.POSIXct(median_form, origin='1970-01-01'))
-  baseline = int_time(baseline) # make intervention time, see 99_functions
-  # now add to outcomes 
-  int_time_data = select(baseline, participant_id, int_time) # data with just intervention time
-  clinicianled_review = select(clinicianled_review, -'int_time') %>% # remove old time
-    left_join(int_time_data, by='participant_id')
-  care_directive = select(care_directive, -'int_time') %>% # remove old time
-    left_join(int_time_data, by='participant_id')
-  palliative_care_referral = select(palliative_care_referral, -'int_time') %>% # remove old time
-    left_join(int_time_data, by='participant_id')
-}
-```
+The scrambling is introduced after we have presented the baseline data.
 
 This report shows the summary statistics and analysis for the InterACT study using the date available on `r format(data_date, '%d-%b%-%Y')`. The code is available on [GitHub](https://github.com/agbarnett/InterACT).
 
@@ -96,7 +76,7 @@ These plots include patients in whom baseline data screening was not complete.
 
 ```{r, missing.baseline, fig.width=8}
 # remove variables that cannot be missing
-for.missing = select(baseline, -participant_id, -hospital, -int_time, -complete_456, -baseline_screening_complete,
+for.missing = select(baseline, -participant_id, -hospital, -urn, -int_time, -complete_456, -baseline_screening_complete,
                      -ends_with('_team'), # not in all hospitals
                      -'cristal_icu_current', -'cristal_admit_ed', # conditional
                      -redcap_version,
@@ -155,6 +135,7 @@ vis_dat(for.missing)
 ```{r, fig.width=8}
 for.missing = select(clinicianled_review, -participant_id, -hospital, # remove variables that cannot be missing
                      -starts_with('start_date_time'), -starts_with('end_date_time'), # not that important
+                     -redcap_version,
                      -care_review_type_other) # remove conditional variables
 naniar::gg_miss_var(for.missing, show_pct = FALSE)
 ```
@@ -163,6 +144,7 @@ naniar::gg_miss_var(for.missing, show_pct = FALSE)
 
 ```{r, fig.width=8}
 for.missing = select(palliative_care_referral, -participant_id, -hospital, # remove variables that cannot be missing
+                     -redcap_version,
                      -starts_with('start_date_time'), -starts_with('end_date_time') # not that important
                      ) # remove conditional variables
 naniar::gg_miss_var(for.missing, show_pct = FALSE)
@@ -180,7 +162,7 @@ naniar::gg_miss_var(for.missing, show_pct = FALSE)
 
 ## Overall numbers
 
-Here are the overall number of patients per hospital for those screened because they are at risk, meaning SPICT or CRiSTAL positive.
+Here are the overall number of patients per hospital for those screened because they are at risk, meaning SPICT or CRiSTAL positive. The SPICT and CriSTAL full definitions are available online [here](https://tinyurl.com/y2w54mqd). 
 
 The total number of identified patients, 75 years or older, admitted under participating clinical teams, across all three hospitals was `r format(nrow(baseline), big.mark=',')`. 
 
@@ -198,7 +180,7 @@ sankey = ggplot(numbers,
   scale_x_discrete(limits = c("Screened", "Screening\ncomplete",'At risk'), expand = c(.04, .05))+
   scale_fill_manual('Hospital', values = cbPalette)+
   g.theme+
-  theme(text = element_text(size=12))
+  theme(text = element_text(size=13))
 sankey
 ```
 
@@ -225,7 +207,7 @@ with(baseline, ctable(hospital, at_risk, dnn=c('Hospital',''), round.digits=0, u
 
 From now on, all results are for those with baseline screening completed
 
-The table shows the numbers by hospital that were either Cristal or SPICT positive.
+The table shows the numbers by hospital that were either CriSTAL or SPICT positive.
 The total column shows the total number of patients with complete screening.
 
 ##### GCUH teams, at risk patients
@@ -250,19 +232,21 @@ with(baseline, ctable(tpch_team, at_risk, dnn=c('TPCH team',''), round.digits=0,
 
 Here we examine if we are on target to reach the sample size. 
 The total target sample size is `r 3*7*50*3`, which is 3 at-risk patients per team per week, with 7 teams per hospital, 50 weeks of data collection, and three hospitals. 
+We also restrict the sample to patients with at least one follow-up form, as these are necessary for some of the key outcomes.
 
 ```{r}
+two.weeks = Sys.Date() - 14 # date two weeks ago
 # Estimate at risk numbers per hospital per week
 numbers = filter(baseline, 
+                 admission_date <= two.weeks, # remove most recent weeks (data collection is ongoing)
                  at_risk == 'At risk',
-                 complete_456 == 'Yes') %>%
+                 complete_456 == 'Yes') %>% # with at least one follow-up form
   select(hospital, admission_date) %>%
   mutate(week = as.numeric(format(admission_date, '%Y')) + as.numeric(format(admission_date, '%U'))/53) %>%
   group_by(hospital, week) %>%
   summarise(n=n()) %>%
   group_by(hospital) %>%
   arrange(week) %>%
-  slice_head(prop=0.95) %>% # remove most recent weeks (data collection is ongoing)
   summarise(median = round(median(n)), q1 = round(quantile(n, 0.25)), q3 = round(quantile(n, 0.75)))
 flextable(numbers)
 ```
@@ -300,6 +284,40 @@ cplot = ggplot(data=for.plot, aes(x=date_seen, y=cum, lty=int_time, col=factor(h
 cplot
 ```
 
+### Overall numbers by study time period
+
+The table shows the numbers in each hospital by study time period.
+
+```{r}
+tab = group_by(baseline, hospital, int_time) %>%
+  tally() %>%
+  rename(`Time` = 'int_time')
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  merge_v(j=1) %>%
+  autofit()
+ftab
+```
+
+### At-risk numbers by study time period
+
+The table shows the numbers in each hospital by study time period and the number (percent) at risk.
+
+```{r}
+tab = group_by(baseline, hospital, int_time, at_risk) %>%
+  tally() %>%
+  group_by(hospital, int_time) %>%
+  mutate(percent = prop.table(n)*100,
+         cell = paste(n, ' (', round(percent), ')', sep='')) %>%
+  select(-n, -percent) %>%
+  spread(at_risk, cell) %>%
+  rename(`Time` = 'int_time')
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  merge_v(j=1) %>%
+  autofit()
+ftab
+```
 
 ### Admission time
 
@@ -325,7 +343,7 @@ We examine the time between the patients' admission date/time to the current war
 * The earliest date/time from the four screening forms: demographics, clinical criteria, functional status and comorbidities. This is an estimate of when screening started.
 * The date/time the screening completion form was completed. This is an estimate of when screening ended.
 
-##### Histogram
+##### Box plots
 
 ```{r, fig.width=8}
 # add screening form completion date
@@ -348,15 +366,19 @@ check = filter(to_table, var>60) %>%
 write.csv(check, file='checks/admission_dates.csv', row.names = FALSE, quote=FALSE)
 # plot
 hplot = ggplot(data=to_table, aes(x=var, fill=at_risk))+
-  geom_histogram()+
+  geom_boxplot(width=0.1)+
   scale_fill_manual(NULL, values=cbPalette)+
-  xlab('Difference from admissision to screening complete (days)')+
-  ylab('Count')+
-  facet_grid(difference~hospital, scales = 'free')+
-  scale_x_continuous(limits=c(0, NA)) +  # remove few data errors
-  theme_bw()
+  xlab('Difference from ward admissision to screening complete (days)')+
+  ylab('')+
+  facet_grid(difference~hospital)+
+  scale_y_continuous(breaks=NULL)+
+  scale_x_log10()+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())
 hplot
 ```
+
+The time axis is on a log scale (base 10) because of the strong positive skew in the difference in times.
 
 ##### Summary statistics
 
@@ -366,7 +388,10 @@ stats = group_by(to_table, at_risk, difference, hospital) %>%
             missing = sum(is.na(var)),
             q1 = roundz(quantile(var, prob=0.25, na.rm=TRUE),1),
             median = roundz(median(var, na.rm=TRUE),1),
-            q3 = roundz(quantile(var, prob=0.75, na.rm=TRUE),1))
+            q3 = roundz(quantile(var, prob=0.75, na.rm=TRUE),1)) %>%
+  rename('At risk' = 'at_risk',
+         'Screening time' = 'difference',
+         'Hospital' = 'hospital')
 ft = flextable(stats)
 autofit(ft)
 ```
@@ -402,11 +427,13 @@ freq(baseline$pt_sex, cumul=FALSE, report.nas = FALSE)
 The SPICT score has a range from 0 to 6 and uses the following six variables:
 
 * Unplanned hospital admission
-* Perform status
-* Care others
-* Weight loss
-* Persist symptoms
-* Care focus
+* Performance status is poor or deteriorating
+* Depends on others for care
+* Progressive weight loss; remains under weight; low muscle mass
+* Persistent symptoms despite optimal treatment of underlying conditions
+* Patient (or family) asks for palliative care
+
+Each of the six variables contributes equally to the score. Unknown or missing values are assumed to be "No".
 
 ### Correlation matrix of SPICT variables
 
@@ -433,7 +460,7 @@ vars = which(corr==max.corr, arr.ind = T)
 
 The plot shows the observed correlation between SPICT variables. Correlations for two variables range from -1 if they are perfectly negatively associated, to 0 if there is no association, to +1 if they are perfectly positively associated.
 
-The strongest positive correlation is `r round(max.corr,2)` between "`r row.names(vars)[1]`" and "`r row.names(vars)[2]`". 
+The strongest positive correlation is `r round(max.corr,2)` between "`r row.names(vars)[1]`" and "`r row.names(vars)[2]`". There were no negative correlations.
 
 ### Tables of SPICT variables in each hospital
 
@@ -471,7 +498,7 @@ The darker blue bars show the SPICT-positive patients.
 
 ## SPICT positive by hospital
 
-The threshold for SPICT positive is `r thresholds$spict_threshold` or more.
+A patient is SPICT positive if their score is `r thresholds$spict_threshold` or greater.
 
 ```{r, results='asis'}
 baseline = mutate(baseline, 
@@ -504,9 +531,9 @@ list_resp = bind_rows(list_resp, zeros)
 cplot = ggplot(list_resp, aes(x = spicts)) +
     geom_bar(aes(y=..count../sum(..count..)), fill = "indianred3") +
     g.theme+
-    xlab("SPICT variables") +
+    xlab("SPICT combinations") +
     ylab("Proportion of patients") +
-    scale_x_upset(n_intersections = 20, n_sets = 20) # top twenty
+    scale_x_upset(n_intersections = 20) # top twenty
 cplot
 # export to figure
 filename = paste('figures/spict_upset', file_plus, '.jpg', sep='')
@@ -517,14 +544,14 @@ invisible(dev.off())
 
 # CriSTAL 
 
-The CriSTAL score has a range from 0 to 18 and uses the following 16 variables:
+The CriSTAL score has a range in this study from 1 to 18. It uses the following 16 variables:
 
-* Admitted via ED
-* Admitted From nursing home
-* Age over 75
+* Age over 75 (_all patients in the InterACT study_)
+* Admitted via Emergency Department
+* Admitted From nursing home or supported accommodation
 * Previous hospitalisation in last 12 months
 * ICU admission
-* Clinical frailty score (thresholds at 5+ and 7+)
+* Clinical frailty score (two thresholds at 5+ and 7+)
 * Advanced cancer
 * Proteinuria
 * Chronic kidney disease
@@ -535,6 +562,17 @@ The CriSTAL score has a range from 0 to 18 and uses the following 16 variables:
 * Stroke
 * Cognitive impairment
 * Liver disease
+
+And 8 clinical criteria:
+
+* Decreased level of consciousness (LOC) Glasgow Coma Scale (GCS) decreased more than 2 compared with baseline for this person
+* Systolic Blood Pressure less than 90 mmHg
+* Respiratory Rate less than 5 or greater than 30 bpm	
+* Pulse Rate less than 40 or greater than 140 bpm	
+* Oxygen required or oxygen saturation less than 90%	
+* Hypoglycaemia (BGL 1.0 to 4.0 mmol/L)
+* Repeat or prolonged seizures (any type) More than one in 24hrs (including prior to hospital admission) or duration greater than 5 min	
+* Low urine output (less than 15 ml/hr or less than 0.5 ml/kg/hr)	
 
 We use two thresholds for the clinical frailty score at 5 or more and 7 or more.
 
@@ -558,14 +596,18 @@ row.names(corr)[row.names(corr) == "Frailty score >= 6"] = 'Frailty score'
 # plot
 diag(corr) = NA # blank diagonals
 ggcorrplot(corr, tl.cex=8) # cex to reduce text size
-# for text around strongest correlation
+# for text around strongest correlations
 max.corr = max(corr[lower.tri(corr, diag=FALSE)])
-vars = which(corr==max.corr, arr.ind = T)
+vars.pos = which(corr==max.corr, arr.ind = T)
+min.corr = min(corr[lower.tri(corr, diag=FALSE)])
+vars.neg = which(corr==min.corr, arr.ind = T)
 ```
 
-The plot shows the observed correlation between CRiSTAL variables. The strongest positive correlation is `r round(max.corr,2)` between "`r row.names(vars)[1]`" and "`r row.names(vars)[2]`". 
+The plot shows the observed correlation between CRiSTAL variables. The strongest positive correlation is `r round(max.corr,2)` between "`r row.names(vars.pos)[1]`" and "`r row.names(vars.pos)[2]`". The strongest negative correlation is `r round(min.corr,2)` between "`r row.names(vars.neg)[1]`" and "`r row.names(vars.neg)[2]`". 
 
 The clinical frailty score is continuous, whereas the other variables are binary. To make the binary variables numeric, we group 'no' and 'unknown' together as zero, and compare them with 'yes' as one.
+
+We did not include age in the correlation plot as every patient is over 75.
 
 ### Tables of CriSTAL variables in each hospital
 
@@ -591,13 +633,16 @@ with(cristal,
 ### CriSTAL score by hospital
 
 ```{r, fig.width=8}
+#
+MaxC = max(baseline$cristal_score) # for x-axis limit
+#
 to.bar = group_by(baseline, hospital, cristal_score) %>%
   summarise(count = n()) %>%
   mutate(fill = as.factor(cristal_score >= thresholds$cristal_threshold))
 cristal.bar = ggplot(data=to.bar, aes(x=cristal_score, y=count, fill=fill))+ # colour bars by positive
   xlab('CriSTAL score')+
   ylab('Count')+
-  scale_x_continuous(breaks=0:10)+
+  scale_x_continuous(breaks=0:MaxC)+
 #  scale_y_continuous()
   geom_bar(stat='identity')+
   scale_fill_manual(NULL, values=c('skyblue','dark blue'))+
@@ -607,7 +652,8 @@ cristal.bar = ggplot(data=to.bar, aes(x=cristal_score, y=count, fill=fill))+ # c
 cristal.bar
 ```
 
-The darker blue bars show the CriSTAL-positive patients.
+The darker blue bars show the CriSTAL-positive patients with a score of `r thresholds$cristal_threshold` or greater. 
+
 
 ### CriSTAL score summary statistics by hospital
 
@@ -616,6 +662,8 @@ The darker blue bars show the CriSTAL-positive patients.
 stby(data = baseline$cristal_score, 
            INDICES = baseline$hospital, 
            FUN = descr, stats = c('N.valid','mean','sd','min','med','max'), transpose = TRUE, round.digits =1)
+# TO DO: change N.valid, mean to more user friendly names
+# may need to switch to dplyr
 ```
 
 ### CriSTAL positive by hospital
@@ -662,9 +710,9 @@ list_resp = bind_rows(list_resp, zeros)
 cplot = ggplot(list_resp, aes(x = cristals)) +
     geom_bar(aes(y=..count../sum(..count..)), fill = "#6855CD") +
     g.theme+
-    xlab("CriSTAL variables") +
+    xlab("CriSTAL combinations") +
     ylab("Proportion of patients") +
-    scale_x_upset(n_intersections = 20, n_sets = 20) # top twenty
+    scale_x_upset(n_intersections = 20) # top twenty
 cplot
 # export to figure
 filename = paste('figures/cristal_upset', file_plus, '.jpg', sep='')
@@ -697,8 +745,8 @@ Here we look at the number of unknowns as this is useful for identifying variabl
 
 ```{r}
 to_table = select(baseline, participant_id, spict.vars, cristal.vars) %>%
-  select(-cristal_cfs_score) %>% # remove scores
   tidyr::gather(key='variable', value='answer', -participant_id) %>% # to long
+  mutate(answer = ifelse(variable =='cristal_cfs_score' & answer=='1', 'Unknown', answer)) %>% # recode unknown for CFS
   filter(answer=='Unknown') %>%
   group_by(variable) %>%
   summarise(Count = n()) %>%
@@ -742,7 +790,7 @@ to_plot = circular_plots(clinicianled_review)
 grid.arrange(to_plot$week, to_plot$hour, ncol=2)
 ```
 
-There are `r to_plot$missing_hour` result that are missing the time the referral took place.
+There are `r to_plot$missing_hour` results that are missing the date/time the referral took place.
 
 ### Type of clinician-led review activity
 
@@ -751,7 +799,7 @@ There are `r to_plot$missing_hour` result that are missing the time the referral
 with(clinicianled_review, freq(care_review_type, round.digits=0, cumul = FALSE, report.nas =FALSE))
 ```
 
-### Difference between screening date and date of clinician-led review
+### Difference between ward admission date/time and clinician-led review date/time
 
 #### Table of difference (days)
 
@@ -765,7 +813,7 @@ with(clinicianled_review, descr(time_change, stats=c('N.Valid','min','Q1','med',
 ```{r}
 hplot = ggplot(data=clinicianled_review, aes(x=time_change))+
   geom_histogram(fill = "#CDAD00")+
-  xlab('Days between screening and clinician-led review')+
+  xlab('Days between ward admission and clinician-led review')+
   g.theme
 hplot
 ```
@@ -776,7 +824,45 @@ hplot
 with(clinicianled_review, freq(care_review_conflict, round.digits=0, cumul = FALSE, report.nas =FALSE))
 ```
 
-# Outcome: Care directive measure
+# COVID tests
+
+Has the patient tested positive for COVID-19?	
+
+```{r, results='asis'}
+with(complete, freq(covid19, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+# Outcomes
+
+From here on the report focuses on outcomes.
+
+```{r scramble, include=FALSE}
+# scramble from now on
+if(scramble==TRUE){
+  min_date = as.numeric(as.POSIXct('2020-05-25 00:00', tz='Australia/Brisbane')) # start of usual care
+  max_date = as.numeric(as.POSIXct('2021-06-06 00:00', tz='Australia/Brisbane')) # end of intervention
+  set.seed(123456)
+  baseline = select(baseline, -'int_time') %>% # remove old time
+    mutate(
+      median_form = runif(min=min_date, max=max_date, n=nrow(baseline)), # random from earliest start till 400 days plus
+    median_form = as.POSIXct(median_form, origin='1970-01-01'))
+  baseline = int_time(baseline) # make intervention time, see 99_functions
+  # now add to outcomes 
+  int_time_data = select(baseline, participant_id, int_time) # data with just intervention time
+  clinicianled_review = select(clinicianled_review, -'int_time') %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  care_directive = select(care_directive, -'int_time') %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  palliative_care_referral = select(palliative_care_referral, -'int_time') %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  
+  #
+  cat('From this point the data are scrambled.\n')
+}
+```
+
+
+## Outcome: Care directive review
 
 The results in this section only use the first care directive per patient, or for patients without a review the most recently completed form.
 
@@ -818,7 +904,7 @@ cplot = ggplot(list_resp, aes(x = outcomes)) +
     g.theme+
     xlab("") +
     ylab("Number of patients") +
-    scale_x_upset(n_intersections = 10, n_sets = 10) # top ten
+    scale_x_upset(n_intersections = 10) # top ten
 cplot
 ```
 
@@ -831,17 +917,28 @@ to.table = filter(care_directive, change_var =='Yes') %>%
   mutate(nicevar = nice.rename.directive(num),
          num = as.numeric(str_remove_all(num, '[^0-9]')),
          numf = factor(num, levels=1:8, labels=care_directives), 
-         checked = factor(checked, levels=c('Checked','Unchecked'), labels=c('Yes','No')))
-with(to.table, ctable(nicevar, checked, dnn=c(' ',''), round.digits=0, totals=FALSE, useNA='no'))
+         checked = factor(checked, levels=c('Checked','Unchecked'), labels=c('Yes','No'))) %>%
+  group_by(nicevar, checked) %>%
+  tally() %>%
+  group_by(nicevar) %>%
+  mutate(percent = round(100*prop.table(n)),
+         cell = paste(n, ' (', percent, ')', sep=''))
+for.table = select(to.table, -n, -percent) %>%
+  tidyr::spread(key=checked, value=cell)
+#%>%  arrange()
+ftab = flextable(for.table) %>%
+  autofit()
+ftab
+#with(to.table, ctable(nicevar, checked, dnn=c(' ',''), order='freq', round.digits=0, totals=FALSE, useNA='no'))
 ```
 
 ##### Bar plot
 
 ```{r, fig.width=8}
-stack = ggplot(data=to.table, aes(x=numf, fill=checked))+
-  geom_bar(position='stack')+
+stack = ggplot(data=to.table, aes(x=nicevar, y=n, fill=checked))+
+  geom_bar(position='stack', stat='identity')+
   g.theme+
-  scale_x_discrete(limits = rev(levels(to.table$numf)))+ # reverse order to match above table
+  scale_x_discrete(limits = rev(unique(to.table$nicevar)))+ # reverse order to match above table
   scale_fill_manual(NULL, values=c("#00BFFF", "#4EEE94", "#FFFFFF"))+
   coord_flip()+
   xlab('')+
@@ -849,22 +946,21 @@ stack = ggplot(data=to.table, aes(x=numf, fill=checked))+
 stack
 ```
 
-### Survival analysis of time to first care directive measure
+### Survival analysis of time from ward admission to first care directive review
 
-Here we use survival analysis to examine the time to the first care directive measure. We exclude the establishment phase and so compare the usual care and intervention periods. The plot below shows the cumulative incidence for the first care directive measure by intervention period.
+Here we use survival analysis to examine the time to the first care directive review. We exclude the establishment phase and so compare the usual care and intervention periods. The plot below shows the cumulative incidence for the first care directive review by intervention period.
 
-###### Cumulative risks plots (first 40 days)
+###### Cumulative risks plots (first 30 days)
 
 ```{r}
 ## set up data, multiple exclusions (these are already defined as high-risk patients)
 
-
 # to do: competing risk for in-hospital death, waiting on routinely collected data as death is not in REDCAp
 
 # exclude prior:
-for_model1 = filter(clinicianled_review, 
+for_model1 = filter(care_directive, 
                    change_var !='Prior')
-n_excluded_prior = nrow(clinicianled_review) - nrow(for_model1)
+n_excluded_prior = nrow(care_directive) - nrow(for_model1)
 # exclude establishment phase:
 for_model2 = filter(for_model1, 
                    int_time != 'Establishment')
@@ -872,14 +968,16 @@ n_excluded_establishment = nrow(for_model1) - nrow(for_model2)
 # exclude negative times:
 for_model3 = filter(for_model2, 
                    time_change >=0) %>%
-    mutate(int_time_n = as.numeric(int_time)) # needs to be a number for survminer
+    mutate(int_time_n = as.numeric(int_time), # needs to be a number for survminer
+           change_var = as.character(change_var), # needed for ifelse below
+           change_var = ifelse(change_var=='No', 'Censored', change_var)) # change "No" to "censored" for this analysis. Competing risks are death/event
 n_excluded_negative = nrow(for_model2) - nrow(for_model3) 
 # cumulative incidence plot
-cum_inc = with(for_model3, cuminc(ftime=time_change, fstatus=change_var=='Yes', group=int_time_n, strata=hospital, cencode='Censored'))
+cum_inc = with(for_model3, cuminc(ftime=time_change, fstatus=change_var, group=int_time_n, strata=hospital, cencode='Censored'))
 g = ggcompetingrisks(cum_inc,
                  xlab = 'Days',
                  ylab = 'Cumulative probability',
-                 xlim = c(0,40), # first 40 days
+                 xlim = c(0,30), # truncate to interesting days
                  multiple_panels = FALSE,
                  title = '',
 #                 gsep = '_', # dummy to prevent groups being created from spaces
@@ -887,25 +985,30 @@ g = ggcompetingrisks(cum_inc,
                  legend.title='',
                  risk.table = TRUE, # does not work
                  conf_int = TRUE) # does not work
-g = g + geom_line(size = 1.05) + # make lines thicker
-  theme(legend.position = 'none') # remove legend
-g
+# redo plot for greater control
+to_plot = filter(g$data, time<=30) # truncate to interesting days
+alt_plot = ggplot(to_plot, aes(x=time, y=est, col=group))+
+  geom_line(size = 1.05)+  # make lines thicker
+  theme_bw()+
+  scale_color_manual(NULL, values=cbPalette, labels=c('Usual care','Intervention'))+
+  xlab('Days from ward admission')+
+  ylab('Cumulative probability')+
+  theme(legend.position = c(0.85, 0.15))
+alt_plot
 ```
 
-There were `r n_excluded_prior` patients excluded because they already had a valid review prior to this admission. `r n_excluded_establishment` patients were excluded as they were in the establishment period. `r n_excluded_negative` were excluded because their times were negative.
-
-The number of patients censored was `r 1` (to do).
+There were `r n_excluded_prior` patients excluded because they already had a valid review prior to this admission. `r n_excluded_establishment` patients were excluded as they were in the establishment period. `r n_excluded_negative` were excluded because their times were negative. The number of patients censored was `r sum(for_model3$change_var=='Censored')`.
 
 ###### Survival model
 
 ```{r}
 # Cox model stratified on team
-# in-hospital death as competing risk
-# to here, need to finalise regression model
+## to do, add competing model for in-hospital death if enough numbers
 
 # add variables from baseline data
 data_to_add = select(baseline, participant_id, pt_sex, age, team)
-for_model3 = left_join(for_model3, data_to_add, by='participant_id')
+for_model3 = left_join(for_model3, data_to_add, by='participant_id') %>%
+  mutate(int_time = relevel(int_time, ref= "Usual care")) # better reference category
 # model - do not use Cox, protocol says otherwise
 # stratify on hospital
 cox_model = coxph(Surv(time = time_change, event = change_var=='Yes') ~ int_time + I(age/5) + pt_sex + strata(team), data = for_model3)
@@ -922,25 +1025,57 @@ ft = flextable(ests)
 autofit(ft)
 ```
 
-We used a Cox proportional hazards model stratified on team.
-The table shows the hazard ratios and 95% confidence intervals.
+We used a Cox proportional hazards model stratified on team. The variables included were age, sex and intervention phase which used a reference category of "usual care".
 
-###### Survival model checking
+The table shows the hazard ratios (HRs) and 95% confidence intervals (CIs).
+Age increased the hazard of the first care directive, meaning it was associated with shorter times to the first clinician-led review. 
 
-Here we plot the baseline hazard in each team.
+##### Survival model checking
 
-```{r}
+###### a) Baseline hazard
+
+Here we plot the baseline hazard in each team. This is useful for checking the differences between hospitals. 
+
+```{r, fig.width=8}
 base = basehaz(cox_model, centered=TRUE) %>%
   tidyr::separate(strata, into=c('hospital','team'))
 bplot = ggplot(data=base, aes(x=time, y=hazard, col=team))+
   geom_line()+
-  scale_x_continuous(limits=c(0,40))+
+  scale_x_continuous(limits=c(0,30))+
   xlab('Time, days')+
   facet_wrap(~hospital)+
   g.theme
 bplot
 ```
 
+###### b) Proportional hazards assumption
+
+Here we check the oroportional hazards assumption for Cox models. A non-proportional hazard would mean that a variable would change over time, e.g., age having a greater effect at longer times.
+
+```{r}
+p_haz = cox.zph(cox_model)
+for_table = as.data.frame(p_haz$table) %>%
+  mutate(Variable = row.names(.),
+         chisq = round(chisq*100, 0)/100,
+         p = format.pval(p, eps=0.001, digits=3)) %>%
+  select(Variable, everything())
+ftab = flextable(for_table) %>%
+  autofit()
+ftab
+```
+
+###### c) Checking for influential patients
+
+Here we check whether there are influential patients in the Cox survival analysis. An influential patient is one who has a large effect of the estimates and hence any inference.
+
+The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
+
+```{r}
+influence_cox = ggcoxdiagnostics(fit=cox_model, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, ggtheme = theme_bw())
+influence_cox
+```
+
+The two patients with unknown sex are relatively influential.
 
 
 ### Days and times when reviews took place
@@ -952,7 +1087,7 @@ grid.arrange(to_plot$week, to_plot$hour, ncol=2)
 
 There are `r to_plot$missing_hour` result that are missing the time the review took place.
 
-### Difference in days between screening date and initiation of care directive measure
+### Difference in days between ward admission date/time and initiation of care directive review date/time
 
 #### Table of difference
 
@@ -966,7 +1101,7 @@ with(care_directive, descr(time_change, stats=c('N.Valid','min','Q1','med','Q3',
 ```{r}
 hplot = ggplot(data=care_directive, aes(x=time_change))+
   geom_histogram(fill = "turquoise4")+
-  xlab('Days between screening and initiation of care directive measure')+
+  xlab('Days between ward admission and initiation of care directive review')+
   g.theme
 hplot
 ```
@@ -980,7 +1115,7 @@ with(to.table, freq(tracker, round.digits=0, cumul = FALSE, report.nas =FALSE))
 ```
 
 
-# Outcome: Palliative care referral
+## Outcome: Palliative care referral
 
 The results in this section only use the first palliative care referral per patient, or for patients without a review the most recently completed form.
 
@@ -1000,7 +1135,7 @@ grid.arrange(to_plot$week, to_plot$hour, ncol=2)
 
 There are `r to_plot$missing_hour` result that are missing the time the referral took place.
 
-### Difference in days between screening date and initiation of care directive measure
+### Difference in days between ward admission date/time and initiation of palliative care referral date/time
 
 #### Table of difference
 
@@ -1015,11 +1150,12 @@ with(palliative_care_referral, descr(time_change, stats=c('N.Valid','min','Q1','
 # TO DO: add treatment as a colour when it becomes available
 hplot = ggplot(data=palliative_care_referral, aes(x=time_change))+
   geom_histogram(fill = "darkorange1")+
-  xlab('Days between at risk time and initiation of care directive measure (days)')+
+  xlab('Days between ward admission and initiation of care directive review')+
   g.theme+
   facet_wrap(~hospital, scales = 'free')
 hplot
 ```
+
 
 # Appendices
 
