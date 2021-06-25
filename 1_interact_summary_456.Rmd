@@ -1,0 +1,1357 @@
+---
+title: 'InterACT project: outcomes 4, 5 and 6'
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+    reference_docx: rmarkdown-styles-reference.docx
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+source('99_functions.R')
+library(boot) # for bootstrap confidence intervals
+library(rms) # for survival estimates
+library(cmprsk) # for cumulative incidence
+library(broom) # for regression models
+library(dplyr)
+library(tidyr)
+library(janitor) # for tables with column totals
+library(TeachingDemos) # for random seed
+library(stringr)
+library(flextable)
+library(survminer) # for graphical influential plots
+
+## get the data
+data_to_use = 'real'
+if(data_to_use=='real'){load('data/FullData.RData')} # from 0_read_data_redcap.R 
+if(data_to_use=='dummy'){load('data/DummyData.RData'); file_plus='_dummy'} # dummy data from 0_make_dummy_data.R 
+# just use version three
+baseline = filter(baseline, redcap_version==3)
+complete = filter(complete, redcap_version==3)
+care_directive = filter(care_directive, redcap_version==3)
+palliative_care_referral = filter(palliative_care_referral, redcap_version==3)
+clinicianled_review = filter(clinicianled_review, redcap_version==3)
+survival_data = filter(survival_data, redcap_version==3) %>%
+  arrange(datetime_1) # useful for residual checks and influence plots
+# sort out intervention time as a factor by dropping unused levels
+baseline = mutate(baseline, int_time  = droplevels(int_time))
+care_directive = mutate(care_directive, int_time  = droplevels(int_time))
+palliative_care_referral = mutate(palliative_care_referral, int_time  = droplevels(int_time))
+clinicianled_review = mutate(clinicianled_review, int_time  = droplevels(int_time))
+survival_data = mutate(survival_data, int_time  = droplevels(int_time))
+
+# graphics things:
+library(ggplot2)
+library(ggupset)  # to plot combination of reviews
+library(survminer) # for survival plots
+library(gridExtra)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7")
+
+# prediction time used to truncate survival plots and for prediction of risk difference:
+pred_time = 21 # 3 weeks
+n_boot = 100 # number of bootstrap samples for risk difference, up to 5000 for real thing
+
+# scramble intervention (turn off -- FALSE -- when ready)
+scramble = TRUE # 
+```
+
+This report covers outcomes 4, 5 and 6. Other outcomes will be examined later as more data becomes available. 
+
+* Outcome 4: Time to event and type of documented care review activity
+
+* Outcome 5: Time to first care directive measure  
+
+* Outcome 6: Time to first palliative care referrals 
+
+We only examine patients classified as "at risk" due to a positive SPICT or CRiSTAL screening.
+
+### Relevant sections from the protocol
+
+* "Outcomes 2 to 7 will use competing-risk, proportional hazards survival models."
+
+* "analyses [...] will be adjusted for potential confounders of patient age and sex, unless specified otherwise. Additionally, the fitted models will be assessed for adequacy of model fit to data and tested for violations of model assumptions."
+
+* "There is a potential risk that the censoring will be statistically informative as it is more likely to affect patients with long hospital stays. We will compare patient characteristics, notably their length of stay and other study outcomes listed below, of those who were censored with those who were not censored. If large differences are detected, the survival models will be adapted to use inverse probability censoring weighting estimators to explicitly account for the informative censoring."
+
+* "We plan to perform a sensitivity analysis on the time scale used in the survival analyses for Outcomes 2 to 7. The proposed sensitivity analysis will reanalyse the data, using calendar time in conjunction with, and in place of, time since admission to enrolled medical team."
+
+* "A separate sensitivity analysis is proposed to include a weekend and after-hours time-varying indicator covariate in the survival analyses."
+
+* "Patient record screening data collection will continue through the intervention establishment phase but will not be part of the data analysis."
+
+* "As an exploratory data analysis, we will compare the time between patient admission to the recruited clinical team to first high-risk CriSTAL or SPICT-positive identification in the usual care period with the corresponding duration in the intervention period"
+
+# Scrambled intervention group
+
+This document contains the statistical analyses for the InterACT study. The initial document was produced using a scrambled intervention group by randomly assigning participants to usual care or intervention times. This allowed us to finalise the statistical analyses plan and ensure that all investigators understood the analyses before the real intervention was used.
+
+This report shows the outcome analyses for the InterACT study using the data available on `r format(data_date, '%d-%b%-%Y')`. The R code is available on [GitHub](https://github.com/agbarnett/InterACT).
+
+```{r scramble, include=FALSE}
+# scramble from now on
+if(scramble==TRUE){
+  min_date = as.numeric(as.POSIXct('2020-05-25 00:00', origin='1970-01-01', tz='Australia/Brisbane')) # start of usual care
+  max_date = as.numeric(as.POSIXct('2021-06-05 00:00', origin='1970-01-01', tz='Australia/Brisbane')) # end of intervention
+  char2seed('exploding') # random seed
+  baseline = select(baseline, -'int_time') %>% # remove old time
+    mutate(
+      median_form = runif(min=min_date, max=max_date, n=nrow(baseline)), # random from earliest start till 400 days plus
+      median_form = as.POSIXct(median_form, origin='1970-01-01', tz='Australia/Brisbane'))
+  baseline = int_time(baseline) # make intervention time from scrambled date, see 99_functions
+  # now add to outcomes 
+  int_time_data = select(baseline, participant_id, int_time) # data with just intervention time
+  clinicianled_review = select(clinicianled_review, -'int_time') %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  care_directive = select(care_directive, -'int_time') %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  palliative_care_referral = select(palliative_care_referral, -'int_time') %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  # add add to survival data
+  survival_data = select(survival_data, -int_time) %>% # remove old time
+    left_join(int_time_data, by='participant_id')
+  # sort out intervention time as a factor by dropping unused levels
+  baseline = mutate(baseline, int_time = droplevels(int_time))
+  care_directive = mutate(care_directive, int_time  = droplevels(int_time))
+  palliative_care_referral = mutate(palliative_care_referral, int_time  = droplevels(int_time))
+  clinicianled_review = mutate(clinicianled_review, int_time  = droplevels(int_time))
+  survival_data = mutate(survival_data, int_time  = droplevels(int_time)) %>%
+   arrange(datetime_1) # useful for residual checks and influence plots
+}
+```
+
+#### Establishment phase
+
+The establishment phase was the four-week change-over time between the usual care and intervention times.
+We included patients from the establishment phase in the descriptive tables, but excluded them from the survival models. 
+
+#### Survival analyses
+
+The survival analyses used the time to the first "Yes" outcome (e.g., time to first care review). For patients with only "No" outcomes, the time was censored at the date/time of their last "No" outcome. 
+
+The Cox survival models were stratified on team (within hospital), which meant that each team had its own baseline hazard, which allowed for differences in the ways teams typically manage patients. The model then estimated the change in hazard. The variables in the model were the potential confounders of age and sex, and the intervention phase which used a reference category of "usual care".
+
+#### Missing gender
+
+```{r, include=FALSE}
+n_unknown = as.numeric(table(baseline$pt_sex)[3])
+p_unknown = 100*as.numeric(prop.table(table(baseline$pt_sex))[3])
+p_unknown = round(p_unknown, digits=1)
+# now change missing gender
+baseline = mutate(baseline,
+    pt_sex = as.character(pt_sex),
+    pt_sex = ifelse(is.na(pt_sex) == TRUE, 'Female', pt_sex), 
+    pt_sex = ifelse(pt_sex == 'Unknown', 'Female', pt_sex),
+    pt_sex = factor(pt_sex, levels=c('Male','Female')))
+# create small subset of variables to add to outcome data
+data_to_add = select(baseline, participant_id, pt_sex, age, team)
+```
+
+There were `r n_unknown` patients (`r p_unknown`%) with unknown gender. For simplicity these were changed to the modal gender of "Female". We did not believe it was worthwhile to use random imputation for such a small amount of missing data. 
+
+###### page break
+
+# Basic information
+
+## Stepped-wedge date changes
+
+```{r}
+my.date.format = function(x){y= format(x, "%d %b %Y"); return(y)} 
+load('data/date_changes.RData')
+date_changes = mutate(date_changes, 
+                        days_uc = 1 + as.numeric(date_establishment) - as.numeric(date_usual_care),
+                        days_int = 1 + as.numeric(date_post) - as.numeric(date_intervention  )) %>%
+    select(-date_end) %>%
+  mutate_if(lubridate::is.Date, my.date.format) %>%
+  rename('Usual care' = 'date_usual_care',
+         'Establishment' = 'date_establishment',
+         'Intervention' = 'date_intervention',
+         'End of intervention' = 'date_post',
+         'Days in usual care' = 'days_uc',
+         'Days in intervention' = 'days_int'
+         )
+ftab = flextable(date_changes) %>%
+  theme_box() %>%
+  fontsize(size=9, part='all') %>%
+  width( width = c(0.9, 1.1, 1.1, 1.1, 1.1, 1, 1))
+ftab
+# I have verified that times in weeks are either 16, 25 or 34
+```
+  
+The table above shows the key times in each of the three hospitals and the number of days in the usual care and intervention phases.
+
+## Numbers at risk in each phase
+
+```{r}
+table = filter(baseline, 
+               redcap_version == 3,
+               at_risk=="At risk") %>%
+  tabyl(hospital, int_time) %>%
+  adorn_totals("row") 
+ftab = flextable(table) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+## At-risk numbers with outcomes 4, 5 or 6
+
+```{r}
+small1 = filter(care_directive, redcap_version == 3) %>%
+  select(participant_id) %>%
+  unique() %>%
+  mutate(care_directive = TRUE) 
+small2 = filter(clinicianled_review, redcap_version == 3) %>%
+  select(participant_id)  %>%
+  unique() %>%
+  mutate(clinical_review = TRUE)
+small3 = filter(palliative_care_referral, redcap_version == 3) %>%
+  select(participant_id)  %>%
+  unique() %>% # just one per patient
+  mutate(palliative_care = TRUE)
+for_table = filter(baseline, 
+                   redcap_version == 3,
+                   at_risk == "At risk") %>%
+  select(participant_id, int_time) %>%
+  full_join(small1, by='participant_id') %>%
+  full_join(small2, by='participant_id') %>%
+  full_join(small3, by='participant_id') %>%
+  mutate(
+    int_time = as.character(int_time),
+    int_time = ifelse(is.na(int_time)==TRUE, 'Screening not complete', int_time),
+    care_directive = ifelse(is.na(care_directive)==TRUE, FALSE, care_directive),
+         clinical_review = ifelse(is.na(clinical_review)==TRUE, FALSE, care_directive),
+         palliative_care = ifelse(is.na(palliative_care)==TRUE, FALSE, care_directive)) %>%
+  pivot_longer(cols=c(care_directive, clinical_review, palliative_care))
+
+# tabulate
+table = group_by(for_table, int_time, name) %>%
+  summarise(n=sum(value), N=n()) %>%
+  ungroup() %>%
+  mutate(percent = round(100*n/N),
+         cell = paste(n, ' (', percent, ')', sep='')) %>%
+  select(-n, -N, -percent) %>%
+  pivot_wider(names_from = int_time, values_from=cell) %>%
+  select('name','Usual care','Establishment','Intervention','Screening not complete') %>% # ordering
+  mutate(name = str_replace_all(name, '_', ' ')) %>%
+  rename('Outcome' = 'name')
+ftab = flextable(table) %>%
+  theme_box() %>%
+  width( width = c(0.9, 1.2, 1.2, 1.2, 1.2))
+ftab
+```
+
+The table shows the numbers and percentages (in brackets) of at-risk patients who also have each of the outcomes 4, 5 and 6.
+
+# Clinician-led review discussion
+
+### Has a clinician-led care review discussion occurred?
+
+```{r}
+stats = filter(survival_data, outcome=='care_review') %>%
+  tabyl(int_time, event) %>%
+  adorn_totals("col") %>%
+  tidyr::gather(event, n, 2:ncol(.), convert = TRUE) %>%
+  group_by(int_time) %>%
+  mutate(p = round(100*prop.table(n)),
+         p = p*2, # because total is in calculations
+         cell = paste(n, ' (', p, ')', sep='')) %>%
+  select(-n, -p) %>%
+  pivot_wider(names_from = event, values_from=cell) %>%
+  rename('Intervention time' = 'int_time')
+ftab = flextable(stats) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The table shows the number of patients and percentage in brackets.
+
+### Days and times when clinical-led reviews took place
+
+
+```{r, out.width='100%'}
+to_plot = circular_plots(indata = clinicianled_review, 
+                         var = 'care_review',
+                         datetime = 'time_care_review')
+print(to_plot$week)
+```
+
+The results are standardised to the numbers per week because the hospitals had different times in the usual care and intervention phases.
+
+There were `r to_plot$missing_hour` results that are missing the date/time the review took place.
+
+```{r, out.width='100%'}
+print(to_plot$hour)
+```
+
+
+### Type of clinician-led review activity
+
+```{r, results='asis'}
+# only one box can be ticked
+table = filter(clinicianled_review, !is.na(care_review_type)) %>%
+  tabyl(int_time, care_review_type) %>%
+  adorn_totals("col") %>% # add totals
+  tidyr::gather(care_review_type , n, 2:ncol(.), convert = TRUE) %>%
+  group_by(int_time) %>%
+  mutate(p = round(100*prop.table(n)),
+         p = p*2, # because total is in calculations
+         cell = paste(n, ' (', p, ')', sep='')) %>%
+  select(-n, -p) %>%
+  pivot_wider(names_from = int_time, values_from=cell) %>%
+  rename('Care review type' = 'care_review_type')
+ftab = flextable(table) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The table shows the number of patients and percentage in brackets.
+
+### Survival analysis of time from ward admission to first clinical-led review
+
+Here we use survival analysis to examine the time to the first clinical-led review. The plot below shows the cumulative probability for the first clinical-led review by intervention phase.
+
+```{r, include=FALSE}
+## prepare data for cumulative and instantaneous survival models
+# exclude prior:
+for_model_care_review = filter(survival_data,
+                  outcome == 'care_review',
+                  int_time != 'Establishment', # excluded from analysis
+                  event != 'Prior') %>%
+  mutate(hospital = str_sub(participant_id, 1, 4),
+         int_time_n = as.numeric(int_time =='Intervention') + 1, # needs to be a number for survminer (1 = usual care, 2 = intervention)
+           event = as.character(event), # needed for ifelse below
+           event = ifelse(event=='No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+
+# add variables from baseline data that are not in outcome data (age, sex)
+for_model_care_review = left_join(for_model_care_review, data_to_add, by='participant_id')
+
+## numbers excluded
+# a) prior
+n_excluded_prior = nrow(filter(survival_data, 
+                               outcome == 'care_review',
+                               event =='Prior'))
+# b) establishment
+n_excluded_establishment = nrow(filter(survival_data, 
+                               outcome == 'care_review',
+                               event != 'Prior', # avoid double-counting of those excluded for this reason
+                               int_time =='Establishment'))
+```
+
+##### Cumulative probability plot
+
+```{r}
+# cumulative probability plot
+cum_inc = with(for_model_care_review, cuminc(ftime=time, fstatus=event, group=int_time_n, cencode='Censored'))
+g = ggcompetingrisks(cum_inc,
+                 xlab = 'Days',
+                 ylab = 'Cumulative probability',
+                 multiple_panels = FALSE,
+                 title = '',
+#                 gsep = '_', # dummy to prevent groups being created from spaces
+                 cumcensor = TRUE, # does not work
+                 legend.title='',
+                 risk.table = TRUE, # does not work
+                 conf_int = TRUE) # does not work
+# redo plot for greater control
+alt_plot = ggplot(g$data, aes(x=time, y=est, col=group))+
+  geom_line(size = 1.05)+  # make lines thicker
+  scale_x_continuous(limits=c(0,pred_time))+ # limit based on censoring
+  theme_bw()+
+  scale_color_manual(NULL, values=cbPalette, labels=c('Usual care','Intervention'))+
+  xlab('Days from ward admission')+
+  ylab('Cumulative probability')+
+  theme(legend.position = c(0.85, 0.15))
+alt_plot
+```
+
+We limited the plot to the first `r pred_time` days because there were few events after this time.
+
+##### Cox survival model of time to first clinical-led review
+
+```{r}
+# Cox model stratified on team within hospital
+cox_model_care_review = coxph(Surv(time = time, event = event=='Yes') ~ int_time_n + I(age/5) + pt_sex + strata(team), data = for_model_care_review)
+# number missing:
+n_missing = nrow(for_model_care_review) - cox_model_care_review$n
+#
+ests = tidy(cox_model_care_review, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+We used a Cox proportional hazards model stratified on team. The table shows the hazard ratios (HRs) and 95% confidence intervals (CIs).
+Age increased the hazard of the first care directive, meaning it was associated with shorter times to the first care review. 
+
+There were `r n_excluded_prior` patients excluded because they already had a valid review prior to this admission. `r n_excluded_establishment` patients were excluded as they were in the establishment phase. The number of patients censored was `r sum(for_model_care_review$event=='Censored')`. The total number of patients in the survival model was `r format(nrow(for_model_care_review), big.mark=',')`. There were `r n_missing` patients excluded from the survival analysis due to missing data.
+
+##### Absolute measure of risk difference
+
+We supplement the hazard ratios with an absolute measure of risk difference using the difference in survival probability at `r pred_time` days.
+
+```{r}
+risk_difference = risk_diff(
+  indata = for_model_care_review,
+  inmodel= cox_model_care_review,
+  B = n_boot,
+  pred_time = pred_time)
+ftab = flextable(risk_difference) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The results show the predicted survival at `r pred_time` days and the 95% confidence intervals. Also shown is the estimated risk difference and a 95% bootstrap confidence interval for the difference. 
+
+#### Survival model checking (clinical-led review)
+
+##### a) Baseline hazard
+
+Here we plot the baseline hazard in each team. This is useful for checking the differences between hospitals. The plots are limited to the first `r pred_time` days. 
+
+```{r, fig.width=8}
+base = basehaz(cox_model_care_review, centered=TRUE) %>%
+  tidyr::separate(strata, into=c('hospital','team'))
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=team))+
+  geom_line()+
+  scale_color_hue('Team')+
+  scale_x_continuous(limits=c(0,pred_time))+
+  xlab('Time, days')+
+  ylab('Cumulative hazard')+
+  facet_wrap(~hospital)+
+  g.theme
+bplot
+```
+
+The plots appear to show a clear difference between hospitals, with a much higher hazard in TPCH. The hazards in GCUH are the most consistent.  
+
+##### b) Proportional hazards assumption
+
+Here we check the proportional hazards assumption for the Cox model. A non-proportional hazard would mean that the effect of a variable changed over time, e.g., age having a greater effect at longer times. We use a graphical check rather than a formal statistical test. The green line is the smoothed residuals, if the hazards are proportional then this line will be flat.
+
+```{r}
+# ggcoxzph(cox.zph(cox_model_care_review, transform='identity'), se=FALSE) # check of my plot
+res = data.frame(residuals(cox_model_care_review, type='schoenfeld')) 
+res$time = cox.zph(cox_model_care_review, transform='identity')$x # do not transform times
+row.names(res) = NULL
+res = pivot_longer(res, cols=-time, names_to = 'var', values_to='res') %>%
+  mutate(time = as.numeric(time),
+         var = nice_rename(var))
+x.times = c(0.01, 0.1, 1, 5, 10, 40) # times for x-axis
+resplot = ggplot(data=res, aes(x=log2(time), y=res))+
+  geom_hline(lty=2, yintercept = 0)+
+  geom_point(col='grey66')+
+  scale_x_continuous(breaks=log2(x.times), labels=x.times)+
+  geom_smooth(col='darkseagreen4', size=1.05, se=FALSE, method='loess', span=0.9)+
+  ylab('Schoenfeld residual')+
+  xlab('Time from admission, days')+
+  theme_bw()+
+  facet_wrap(~var, scales='free_y', ncol=1)
+resplot
+```
+
+The scales on the y-axis are different. Because of the strong skew in times, we have log-transformed the x-axis.
+
+##### c) Checking for influential patients
+
+Here we check whether there are influential patients in the Cox survival analysis. An influential patient is one who has a large effect of the estimates and hence any inference.
+
+The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
+
+```{r, figure.width=10, fig.height=3}
+influence_cox = ggcoxdiagnostics(fit=cox_model_care_review, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, ggtheme = theme_bw())
+influence_cox
+```
+
+The x-axis of observation ID is the order in which patients were recruited over time. A few relatively large outliers for age could be checked. 
+
+###### page break
+
+# Care directive review
+
+The results in this section only use the first care directive per patient, or for patients without a review the most recently completed form.
+
+### Has there been a review of any care directives?
+
+```{r}
+stats = filter(survival_data, outcome=='care_directive') %>%
+  tabyl(int_time, event) %>%
+  adorn_totals("col") %>%
+  tidyr::gather(event, n, 2:ncol(.), convert = TRUE) %>%
+  group_by(int_time) %>%
+  mutate(p = round(100*prop.table(n)),
+         p = p*2, # because total is in calculations
+         cell = paste(n, ' (', p, ')', sep='')) %>%
+  select(-n, -p) %>%
+  pivot_wider(names_from = event, values_from=cell) %>%
+  rename('Intervention time' = 'int_time')
+ftab = flextable(stats) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The table shows the number of patients and percentage in brackets.
+
+### What care review outcomes occurred?
+
+There were eight outcomes and multiple outcomes could be ticked.
+
+##### Upset plot of care review outcome combinations
+
+Multiple options could be ticked for the care review outcomes, meaning that patients could have combinations of reviews. 
+The plots below shows the top ten combinations split by intervention phase.
+
+```{r, fig.width=7, fig.height=9}
+## get combinations of yes responses
+# had to split by intervention time because of strange deal with NA
+# a) usual care
+yes_responses_uc <- filter(care_directive, 
+         int_time  == 'Usual care', 
+         change_5 == 'Yes') %>% # only where there's some care directive
+  dplyr::select(participant_id, starts_with('type_care_directive'))  %>%
+  as_tibble() %>%
+  tidyr::gather(key='outcome', value='response', -participant_id) %>%
+  filter(response=='Checked') %>% # just yes
+  select(-response) %>%
+  mutate(outcome = nice.rename.directive(outcome)) %>%
+  ungroup()
+# now make list from group responses
+list_resp_uc = group_by(yes_responses_uc, participant_id) %>%
+  summarise(outcomes = list(outcome)) %>%
+  ungroup()
+# add zeros
+all_ids_uc = filter(care_directive, 
+                 int_time == 'Usual care',
+                 change_5 == 'Yes') %>% pull(participant_id)
+missing.ids = all_ids_uc[all_ids_uc %in% list_resp_uc$participant_id == FALSE]
+zeros_uc = as_tibble(data.frame(participant_id = missing.ids))
+list_resp_uc = bind_rows(list_resp_uc, zeros_uc) 
+# plot
+cplot_uc = ggplot(list_resp_uc, aes(x = outcomes)) +
+    geom_bar(aes(y=..count..), fill = "darkseagreen4") +
+    g.theme +
+  ggtitle("Usual care")+
+    xlab("") +
+    scale_x_upset(n_intersections = 10) + # top ten
+    ylab("Number of patients")
+# b) intervention
+yes_responses_int <- filter(care_directive, 
+                           int_time  == 'Intervention', 
+                           change_5 == 'Yes') %>% # only where there's some care directive
+  dplyr::select(participant_id, starts_with('type_care_directive'))  %>%
+  as_tibble() %>%
+  tidyr::gather(key='outcome', value='response', -participant_id) %>%
+  filter(response=='Checked') %>% # just yes
+  select(-response) %>%
+  mutate(outcome = nice.rename.directive(outcome)) %>%
+  ungroup()
+# now make list from group responses
+list_resp_int = group_by(yes_responses_int, participant_id) %>%
+  summarise(outcomes = list(outcome)) %>%
+  ungroup()
+# add zeros
+all_ids_int = filter(care_directive, 
+                    int_time == 'Intervention',
+                    change_5 == 'Yes') %>% pull(participant_id)
+missing.ids = all_ids_int[all_ids_int %in% list_resp_int$participant_id == FALSE]
+zeros_int = as_tibble(data.frame(participant_id = missing.ids))
+list_resp_int = bind_rows(list_resp_int, zeros_int) 
+# plot
+cplot_int = ggplot(list_resp_int, aes(x = outcomes)) +
+  geom_bar(aes(y=..count..), fill = "darkseagreen4") +
+  g.theme +
+  xlab("") +
+  ggtitle("Intervention")+
+  scale_x_upset(n_intersections = 10) + # top ten
+  ylab("Number of patients")
+# grid 
+grid.arrange(cplot_uc, cplot_int, nrow=2)
+```
+
+##### Frequency table of care review outcomes
+
+```{r}
+to.table = filter(care_directive, change_5 =='Yes') %>%
+  select(participant_id, int_time, starts_with('type_care_')) %>%
+  tidyr::gather(key='num', value='checked', -participant_id, -int_time) %>%
+  mutate(Action = nice.rename.directive(num),
+         num = as.numeric(str_remove_all(num, '[^0-9]')),
+         numf = factor(num, levels=1:8, labels=care_directives), 
+         checked = factor(checked, levels=c('Checked','Unchecked'), labels=c('Yes','No')))
+counts = group_by(to.table, int_time, Action, checked) %>%
+  tally() %>%
+  group_by(int_time, Action) %>%
+  mutate(percent = round(100*prop.table(n)),
+         cell = paste(n, ' (', percent, ')', sep=''))
+counts_wide = select(counts, -n, -percent) %>%
+  pivot_wider(names_from=c(int_time, checked), values_from=cell)
+# order from high to low
+overall = filter(to.table, checked=='Yes') %>%
+  group_by(Action) %>%
+  tally() %>%
+  ungroup() %>%
+  arrange(desc(n)) %>% # high to low
+  mutate(x = 1:n())
+for.table = left_join(counts_wide, overall, by='Action') %>%
+  arrange(x) %>%
+  select(-x, -n)
+# header
+typology <- data.frame(
+  col_keys = c( "Action", "Usual care_Yes", "Usual care_No", "Establishment_Yes", "Establishment_No",
+                "Intervention_Yes", "Intervention_No"),
+  what = c(" ", "Usual care", "Usual care", "Establishment", "Establishment", "Intervention", "Intervention"),
+  measure = c("Action", "Yes", "No", "Yes", "No", "Yes", "No"),
+  stringsAsFactors = FALSE )
+#
+ftab = flextable(for.table) %>%
+  set_header_df(mapping = typology, key = "col_keys" ) %>%
+  #merge_v(j=1) %>%
+  merge_h(part = "header") %>%
+  theme_box() %>%
+  fontsize(size=8, part='all') %>%
+  width(width = c(1.8,1,1,1,1,1,1))
+ftab
+```
+
+The table shows the number of patients and percentage in brackets. The table rows are ordered by frequency.
+
+##### Bar plot of care review outcomes 
+
+```{r, fig.width=8}
+for.plot = left_join(counts, overall, by='Action') %>%
+  arrange(x) 
+stack = ggplot(data=for.plot, aes(x=x, y=percent, fill=checked))+
+  geom_bar(position='stack', stat='identity')+
+  g.theme+
+  scale_x_discrete(limits = overall$Action)+ # same order as above
+  scale_fill_manual(NULL, values=c(c("#CDCD00", "#C71585")))+
+  coord_flip()+
+  xlab('')+
+  ylab('Percent of patients')+
+  facet_wrap(~int_time)
+stack
+```
+
+The plot results are ordered by frequency.
+
+### Days and times when care reviews took place
+
+```{r, out.width='100%'}
+to_plot = circular_plots(indata = care_directive, 
+                         var = 'change_5', # outcome
+                         datetime = 'date_time_5') # time of outcome
+print(to_plot$week)
+```
+
+The results are standardised to the numbers per week because the hospitals had different times in the usual care and intervention phases.
+
+There are `r to_plot$missing_hour` result that are missing the time the review took place.
+
+```{r, out.width='100%'}
+print(to_plot$hour)
+```
+
+
+### Have the completed document/s been uploaded to 'tracker'?
+
+```{r, results='asis'}
+stats = filter(care_directive, change_5 =='Yes') %>% # change_5 is event
+  tabyl(int_time, tracker) %>%
+  adorn_totals("col") %>%
+  tidyr::gather(tracker, n, 2:ncol(.), convert = TRUE) %>%
+  group_by(int_time) %>%
+  mutate(p = round(100*prop.table(n)),
+         p = p*2, # because total is in calculations
+         cell = paste(n, ' (', p, ')', sep='')) %>%
+  select(-n, -p) %>%
+  pivot_wider(names_from = tracker, values_from=cell) %>%
+  rename('Intervention time' = 'int_time',
+         'Missing' = 'NA_')
+ftab = flextable(stats) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The above table is only for patients with a care directive. 
+
+### Survival analysis of time from ward admission to first care directive review
+
+Here we use survival analysis to examine the time to the first care directive review. The plot below shows the cumulative probability for the first care directive review by intervention phase.
+
+```{r, include=FALSE}
+## prepare data for cumulative and instantaneous survival models
+# exclude prior:
+for_model_care_directive = filter(survival_data,
+                  outcome == 'care_directive',
+                  int_time != 'Establishment', # excluded from analysis
+                  event != 'Prior') %>%
+  mutate(hospital = str_sub(participant_id, 1, 4),
+         int_time_n = as.numeric(int_time =='Intervention') + 1, # needs to be a number for survminer (1 = usual care, 2 = intervention)
+           event = as.character(event), # needed for ifelse below
+           event = ifelse(event=='No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+
+# add variables from baseline data
+for_model_care_directive = left_join(for_model_care_directive, data_to_add, by='participant_id')
+
+## numbers excluded
+# a) prior
+n_excluded_prior = nrow(filter(survival_data, 
+                               outcome == 'care_directive',
+                               event =='Prior'))
+# b) establishment
+n_excluded_establishment = nrow(filter(survival_data, 
+                               outcome == 'care_directive',
+                               event != 'Prior', # avoid double-counting of those excluded for this reason
+                               int_time =='Establishment'))
+```
+
+
+##### Cumulative probability plot
+
+```{r}
+# cumulative probability plot, strata is not relevant for plot so not added
+cum_inc = with(for_model_care_directive, cuminc(ftime=time, fstatus=event, group=int_time_n, cencode='Censored'))
+g = ggcompetingrisks(cum_inc,
+                 xlab = 'Days',
+                 ylab = 'Cumulative probability',
+                 multiple_panels = FALSE,
+                 title = '',
+#                 gsep = '_', # dummy to prevent groups being created from spaces
+                 cumcensor = TRUE, # does not work
+                 legend.title='',
+                 risk.table = TRUE, # does not work
+                 conf_int = TRUE) # does not work
+# redo plot for greater control
+alt_plot = ggplot(g$data, aes(x=time, y=est, col=group))+
+  geom_line(size = 1.05)+  # make lines thicker
+  scale_x_continuous(limits=c(0,pred_time))+ # limit based on censoring
+  theme_bw()+
+  scale_color_manual(NULL, values=cbPalette, labels=c('Usual care','Intervention'))+
+  xlab('Days from ward admission')+
+  ylab('Cumulative probability')+
+  theme(legend.position = c(0.85, 0.15))
+alt_plot
+```
+
+We limited the plot to the first `r pred_time` days because there were few events after this time.
+
+##### Cox survival model of time to care review
+
+```{r}
+# Cox model stratified on team within hospital
+cox_model_care_directive = coxph(Surv(time = time, event = event=='Yes') ~ int_time_n + I(age/5) + pt_sex + strata(team), data = for_model_care_directive)
+# number missing:
+n_missing = nrow(for_model_care_directive) - cox_model_care_directive$n
+# table
+ests = tidy(cox_model_care_directive, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+We used a Cox proportional hazards model stratified on team. The table shows the hazard ratios (HRs) and 95% confidence intervals (CIs).
+Age increased the hazard of the first care directive, meaning it was associated with shorter times to the first clinician-led review. 
+
+There were `r n_excluded_prior` patients excluded because they already had a valid review prior to this admission. `r n_excluded_establishment` patients were excluded as they were in the establishment phase. The number of patients censored was `r sum(for_model_care_directive$event=='Censored')`. The total number of patients in the survival model was `r format(nrow(for_model_care_directive), big.mark=',')`. There were `r n_missing` patients excluded from the survival analysis due to missing data.
+
+##### Absolute measure of risk difference
+
+We supplement the hazard ratios with an absolute measure of risk difference using the difference in survival probability at `r pred_time` days.
+
+```{r}
+risk_difference = risk_diff(
+  indata = for_model_care_directive,
+  inmodel= cox_model_care_directive,
+  B = n_boot,
+  pred_time = pred_time)
+ftab = flextable(risk_difference) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The results show the predicted survival at `r pred_time` days and the 95% confidence intervals. Also shown is the estimated risk difference and a 95% bootstrap confidence interval for the difference. 
+
+
+#### Survival model checking (care review)
+
+##### a) Baseline hazard
+
+Here we plot the baseline hazard in each team. This is useful for checking the differences between hospitals. The plots are limited to the first `r pred_time` days. 
+
+```{r, fig.width=8}
+base = basehaz(cox_model_care_directive, centered=TRUE) %>%
+  tidyr::separate(strata, into=c('hospital','team'))
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=team))+
+  geom_line()+
+  scale_color_hue('Team')+
+  scale_x_continuous(limits=c(0,pred_time))+
+  xlab('Time, days')+
+  ylab('Cumulative hazard')+
+  facet_wrap(~hospital)+
+  g.theme
+bplot
+```
+
+The hazards are relatively consistent, although there is a larger variance between wards at RBWH.
+
+##### b) Proportional hazards assumption
+
+Here we check the proportional hazards assumption for the Cox model. A non-proportional hazard would mean that the effect of a variable changed over time, e.g., age having a greater effect at longer times. We use a graphical check rather than a formal statistical test. The green line is the smoothed residuals, if the hazards are proportional then this line will be flat.
+
+```{r}
+res = data.frame(residuals(cox_model_care_directive, type='schoenfeld')) 
+res$time = cox.zph(cox_model_care_directive, transform='identity')$x # do not transform times
+row.names(res) = NULL
+res = pivot_longer(res, cols=-time, names_to = 'var', values_to='res') %>%
+  mutate(time = as.numeric(time),
+         var = nice_rename(var))
+x.times = c(0.01, 0.1, 1, 5, 10, 40) # times for x-axis
+resplot = ggplot(data=res, aes(x=log2(time), y=res))+
+  geom_hline(lty=2, yintercept = 0)+
+  geom_point(col='grey66')+
+  scale_x_continuous(breaks=log2(x.times), labels=x.times)+
+  geom_smooth(col='darkseagreen4', size=1.05, se=FALSE, method='loess', span=0.9)+
+  ylab('Schoenfeld residual')+
+  xlab('Time from admission, days')+
+  theme_bw()+
+  facet_wrap(~var, scales='free_y', ncol=1)
+resplot
+```
+
+The scales on the y-axis are different. Because of the strong skew in times, we have log-transformed the x-axis.
+
+The plot shows no concern about non-proportional hazards. 
+
+##### c) Checking for influential patients
+
+Here we check whether there are influential patients in the Cox survival analysis. An influential patient is one who has a large effect of the estimates and hence any inference.
+
+The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
+
+```{r, figure.width=10, fig.height=3}
+influence_cox = ggcoxdiagnostics(fit=cox_model_care_directive, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, ggtheme = theme_bw())
+influence_cox
+```
+
+The x-axis of observation ID is the order in which patients were recruited over time. A few relatively large outliers for age could be checked. 
+
+###### page break
+
+# Palliative care referral
+
+The results in this section only use the first palliative care referral per patient, or for patients without a review the most recently completed form.
+
+### Has this patient been referred to palliative care?
+
+```{r}
+stats = tabyl(palliative_care_referral, int_time, pall_care) %>%
+  adorn_totals("col") %>%
+  tidyr::gather(pall_care, n, 2:ncol(.), convert = TRUE) %>%
+  group_by(int_time) %>%
+  mutate(p = round(100*prop.table(n)),
+         p = p*2, # because total is in calculations
+         cell = paste(n, ' (', p, ')', sep='')) %>%
+  select(-n, -p) %>%
+  pivot_wider(names_from = pall_care, values_from=cell) %>%
+  rename('Intervention time' = 'int_time')
+ftab = flextable(stats) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+### Days and times when referral took place
+
+```{r, out.width='100%'}
+to_plot = circular_plots(palliative_care_referral,
+                         var = 'pall_care',
+                         datetime = 'pall_date')
+print(to_plot$week)
+```
+
+There are `r to_plot$missing_hour` result that are missing the time the referral took place.
+
+The majority of referrals happened in the morning. Few referrals were made on Fridays.
+
+```{r, out.width='100%'}
+print(to_plot$hour)
+```
+
+
+### Survival analysis of time from ward admission to first palliative care referral 
+
+Here we use survival analysis to examine the time to the first palliative care referral. The plot below shows the cumulative probability for the first palliative care referral by intervention phase.
+
+```{r, include=FALSE}
+## prepare data for cumulative and instantaneous survival models
+# exclude prior:
+for_model_palliative = filter(survival_data,
+                  outcome == 'palliative_care_referral',
+                  int_time != 'Establishment', # excluded from analysis
+                  event != 'Prior') %>%
+  mutate(hospital = str_sub(participant_id, 1, 4),
+         int_time_n = as.numeric(int_time =='Intervention') + 1, # needs to be a number for survminer (1 = usual care, 2 = intervention)
+           event = as.character(event), # needed for ifelse below
+           event = ifelse(event=='No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+
+# add variables from baseline data (age, sex)
+for_model_palliative = left_join(for_model_palliative, data_to_add, by='participant_id')
+
+## numbers excluded
+# a) prior
+n_excluded_prior = nrow(filter(survival_data, 
+                               outcome == 'palliative_care_referral',
+                               event =='Prior'))
+# b) establishment
+n_excluded_establishment = nrow(filter(survival_data, 
+                               outcome == 'palliative_care_referral',
+                               event != 'Prior', # avoid double-counting of those excluded for this reason
+                               int_time =='Establishment'))
+```
+
+##### Cumulative probability plot
+
+```{r}
+# cumulative probability plot, strata is not relevant for plot so not added
+cum_inc = with(for_model_palliative, cuminc(ftime=time, fstatus=event, group=int_time_n, cencode='Censored'))
+g = ggcompetingrisks(cum_inc,
+                 xlab = 'Days',
+                 ylab = 'Cumulative probability',
+                 multiple_panels = FALSE,
+                 title = '',
+#                 gsep = '_', # dummy to prevent groups being created from spaces
+                 cumcensor = TRUE, # does not work
+                 legend.title='',
+                 risk.table = TRUE, # does not work
+                 conf_int = TRUE) # does not work
+# redo plot for greater control
+alt_plot = ggplot(g$data, aes(x=time, y=est, col=group))+
+  geom_line(size = 1.05)+  # make lines thicker
+  scale_x_continuous(limits=c(0,pred_time))+ # limit based on censoring
+  theme_bw()+
+  scale_color_manual(NULL, values=cbPalette, labels=c('Usual care','Intervention'))+
+  xlab('Days from ward admission')+
+  ylab('Cumulative probability')+
+  theme(legend.position = c(0.85, 0.15))
+alt_plot
+```
+
+We limited the plot to the first `r pred_time` days because there were few events after this time.
+
+##### Cox survival model of time to first palliative care referral
+
+```{r}
+# Cox model stratified on team within hospital
+cox_model_palliative = coxph(Surv(time = time, event = event=='Yes') ~ int_time_n + I(age/5) + pt_sex + strata(team), data = for_model_palliative)
+# number missing:
+n_missing = nrow(for_model_palliative) - cox_model_palliative$n
+# table
+ests = tidy(cox_model_palliative, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+Older age had a higher hazard ratio meaning a shorter time to palliative care referral. Women had a hazard ratio below one, meaning a longer time to palliative care referral. 
+
+
+There were `r n_excluded_prior` patients excluded because they already had a valid review prior to this admission. `r n_excluded_establishment` patients were excluded as they were in the establishment phase. The number of patients censored was `r sum(for_model_palliative$event=='Censored')`. The total number of patients in the survival model was `r format(nrow(for_model_palliative), big.mark=',')`. There were `r n_missing` patients excluded from the survival analysis due to missing data.
+
+##### Absolute measure of risk difference
+
+We supplement the hazard ratios with an absolute measure of risk difference using the difference in survival probability at `r pred_time` days.
+
+```{r}
+risk_difference = risk_diff(
+  indata = for_model_palliative,
+  inmodel= cox_model_palliative,
+  B = n_boot,
+  pred_time = pred_time)
+ftab = flextable(risk_difference) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The results show the predicted survival at `r pred_time` days and the 95% confidence intervals. Also shown is the estimated risk difference and a 95% bootstrap confidence interval for the difference. 
+
+
+
+#### Survival model checking (palliative care)
+
+##### a) Baseline hazard
+
+Here we plot the baseline hazard in each team. This is useful for checking the differences between hospitals. The plots are limited to the first `r pred_time` days. 
+
+```{r, fig.width=8}
+base = basehaz(cox_model_palliative, centered=TRUE) %>%
+  tidyr::separate(strata, into=c('hospital','team'))
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=team))+
+  geom_line()+
+  scale_color_hue('Team')+
+  scale_x_continuous(limits=c(0,pred_time))+
+  xlab('Time, days')+
+  ylab('Cumulative hazard')+
+  facet_wrap(~hospital)+
+  g.theme
+bplot
+```
+
+There are relatively large differences in hazards between the teams, and some of these differences are within the same hospital. 
+
+##### b) Proportional hazards assumption
+
+Here we check the proportional hazards assumption for the Cox model. A non-proportional hazard would mean that a variable would change over time, e.g., age having a greater effect at longer times. We use a graphical check rather than a formal statistical test. The green line is the smoothed residuals, if the hazards are proportional then this line will be flat.
+
+```{r}
+res = data.frame(residuals(cox_model_palliative, type='schoenfeld')) 
+res$time = cox.zph(cox_model_palliative, transform='identity')$x # do not transform times
+row.names(res) = NULL
+res = pivot_longer(res, cols=-time, names_to = 'var', values_to='res') %>%
+  mutate(time = as.numeric(time),
+         var = nice_rename(var))
+x.times = c(0.01, 0.1, 1, 5, 10, 40) # times for x-axis
+resplot = ggplot(data=res, aes(x=log2(time), y=res))+
+  geom_hline(lty=2, yintercept = 0)+
+  geom_point(col='grey66')+
+  scale_x_continuous(breaks=log2(x.times), labels=x.times)+
+  geom_smooth(col='darkseagreen4', size=1.05, se=FALSE, method='loess', span=0.9)+
+  ylab('Schoenfeld residual')+
+  xlab('Time from admission, days')+
+  theme_bw()+
+  facet_wrap(~var, scales='free_y', ncol=1)
+resplot
+```
+
+The scales on the y-axis are different. Because of the strong skew in times, we have log-transformed the x-axis.
+
+The plot shows no concern about non-proportional hazards. 
+
+##### c) Checking for influential patients
+
+Here we check whether there are influential patients in the Cox survival analysis. An influential patient is one who has a large effect of the estimates and hence any inference.
+
+The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
+
+```{r, figure.width=10, fig.height=3}
+influence_cox = ggcoxdiagnostics(fit=cox_model_palliative, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, ggtheme = theme_bw())
+influence_cox
+```
+
+The x-axis of observation ID is the order in which patients were recruited over time. A few relatively large outliers for age could be checked. 
+
+# Sensitivity analyses
+
+## Sensitivity analyses #1: calendar time scale in the survival analyses
+
+Here we use patients' calendar time in the survival analysis in place of patients' time since ward admission. This allows us to examine the baseline hazard over time to check for: 1) Unusual patterns over time, which could be due to other important events, such as COVID lockdowns, 2) The effect of the intervention, and whether any effect was consistent over calendar time. We did not add the intervention phase as a variable in this analysis because it is confounded with calendar time.
+
+An initial model using the scrambled data found that stratifying by team within hospital meant some baseline hazards were relatively erratic due to the small number of events in some teams. Hence we instead stratified only on hospital for this analysis. The estimates of baseline hazard therefore show the average results over time across the hospital. Team was added as a variable in the model to control for long-term differences between teams in the rates of outcomes 4, 5 and 6. 
+
+```{r make_times, include=FALSE}
+### make the intervention times on a calendar time
+# starting date/time (usual care)
+ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz='Australia/Brisbane')
+ref_datetime = as.numeric(ref_datetime)
+# intervention times
+load('data/date_changes.RData') # from 0_date_changes.R
+lines = select(date_changes, hospital, date_intervention) %>%
+  mutate(line = as.POSIXct(date_intervention, tz='Australia/Brisbane'),
+         line = as.numeric(line),
+         time = (line - ref_datetime)/(60*60*24)) # difference from starting date
+```
+
+### a) Care review
+
+```{r}
+# put data on alternative time scale 
+calendar_time_care_review = calendar_time(for_model_care_review) # see 99_functions.R
+
+# run Cox model
+cox_model_care_review_calendar = coxph(Surv(time = start, time2=end, event = event=='Yes') ~ I(age/5) + pt_sex + factor(team) + strata(hospital), data = calendar_time_care_review)
+# number missing:
+n_missing = nrow(calendar_time_care_review) - cox_model_care_review_calendar$n
+# table
+ests = tidy(cox_model_care_review_calendar, conf.int = TRUE) %>%
+  filter(!is.na(estimate),
+         !str_detect(term, 'team')) %>% # do not show team estimates
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+There were `r n_missing` patients excluded from the survival analysis due to missing data.
+
+#### Plot baseline cumulative hazard
+
+```{r, fig.width=8}
+#
+base = basehaz(cox_model_care_review_calendar, centered=TRUE) %>%
+  rename('hospital' = 'strata')
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital))+
+  geom_line()+
+  geom_vline(data=lines, aes(xintercept=time), lty=2)+
+  scale_color_manual(NULL, values=cbPalette)+
+  xlab('Calendar time, days since 25-May-2020')+
+  ylab('Cumulative hazard')+
+  facet_wrap(~hospital)+
+  g.theme+
+  theme(legend.position='none', scales='free_y')
+```
+
+_These plots cannot be shown in the scrambled analysis as they include information about the intervention phase._
+
+The dotted vertical line is the time the intervention was started in each hospital. 
+
+### b) Care directive
+
+```{r}
+# put data on alternative time scale 
+calendar_time_care_directive = calendar_time(for_model_care_directive) # see 99_functions.R
+
+# run Cox model
+cox_model_care_directive_calendar = coxph(Surv(time = start, time2=end, event = event=='Yes') ~ I(age/5) + pt_sex + factor(team) + strata(hospital), data = calendar_time_care_directive)
+# number missing:
+n_missing = nrow(calendar_time_care_directive) - cox_model_care_directive_calendar$n
+# table:
+ests = tidy(cox_model_care_directive_calendar, conf.int = TRUE) %>%
+  filter(!is.na(estimate),
+         !str_detect(term, 'team')) %>% # do not show team estimates
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+There were `r n_missing` patients excluded from the survival analysis due to missing data.
+
+#### Plot baseline cumulative hazard
+
+```{r, fig.width=8}
+#
+base = basehaz(cox_model_care_directive_calendar, centered=TRUE) %>%
+  rename('hospital' = 'strata')
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital))+
+  geom_line()+
+  geom_vline(data=lines, aes(xintercept=time), lty=2)+
+  scale_color_manual(NULL, values=cbPalette)+
+  xlab('Calendar time, days since 25-May-2020')+
+  ylab('Cumulative hazard')+
+  facet_wrap(~hospital)+
+  g.theme+
+  theme(legend.position='none', scales='free_y')
+```
+
+_These plots cannot be shown in the scrambled analysis as they include information about the intervention phase._
+
+### c) Palliative care
+
+```{r}
+# put data on alternative time scale 
+calendar_time_palliative = calendar_time(for_model_palliative) # see 99_functions.R
+
+# run Cox model
+cox_model_palliative_calendar = coxph(Surv(time = start, time2=end, event = event=='Yes') ~ I(age/5) + pt_sex + factor(team) + strata(hospital), data = calendar_time_palliative)
+# number missing:
+n_missing = nrow(calendar_time_palliative) - cox_model_palliative_calendar$n
+# table:
+ests = tidy(cox_model_palliative_calendar, conf.int = TRUE) %>%
+  filter(!is.na(estimate),
+         !str_detect(term, 'team')) %>% # do not show team estimates
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+There were `r n_missing` patients excluded from the survival analysis due to missing data.
+
+#### Plot baseline cumulative hazard
+
+```{r, fig.width=8}
+# calculate cumulative hazard
+base = basehaz(cox_model_palliative_calendar, centered=TRUE) %>%
+  rename('hospital' = 'strata')
+# make difference in hazard?
+
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital))+
+  geom_line()+
+  geom_vline(data=lines, aes(xintercept=time), lty=2)+
+  scale_color_manual(NULL, values=cbPalette)+
+  xlab('Calendar time, days since 25-May-2020')+
+  ylab('Cumulative hazard')+
+  facet_wrap(~hospital)+
+  g.theme+
+  theme(legend.position='none', scales='free_y')
+```
+
+_These plots cannot be shown in the scrambled analysis as they include information about the intervention phase._
+
+## Sensitivity analyses #2: weekend and after-hours effects
+
+Here we include an effect of the weekend and after hours. This is important to rule out any confounding over time due to a change in the times or days when patients presented to hospital (for example, more in-hours patients during the intervention phase). In-hours is defined as 9am to 5pm Monday to Friday, with all other times as out-of-hours. 
+
+We expand the survival data for each patient to cover the times they were in- or out-of-hours. Patients were censored when they moved from in-hours to out-of-hours, and vice versa.
+
+### a) care review
+
+```{r}
+# create long versions of weekend time with changes for in hours vs other hours
+# takes a while due to loop
+weekend_time_care_review = weekend_time(for_model_care_review) # see 99_functions.R
+
+# run Cox model
+cox_model_care_review_in_hours = coxph(Surv(time = start, time2=end, event = event==1) ~ int_time_n + I(age/5) + pt_sex + in_hours + strata(team), data = weekend_time_care_review)
+ests = tidy(cox_model_care_review_in_hours, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+The table shows the hazard ratios and 95% confidence intervals. 
+Care reviews are far more likely to occur in-hours.
+
+### b) care directive
+
+```{r}
+# create long versions of weekend time with changes for in hours vs other hours
+# takes a while due to loop
+weekend_time_care_directive = weekend_time(for_model_care_directive) # see 99_functions.R
+
+# run Cox model
+cox_model_care_directive_in_hours = coxph(Surv(time = start, time2=end, event = event==1) ~ int_time_n + I(age/5) + pt_sex + in_hours + strata(team), data = weekend_time_care_directive)
+ests = tidy(cox_model_care_directive_in_hours, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+The table shows the hazard ratios and 95% confidence intervals. 
+Care directives are far more likely to occur in-hours.
+
+
+### c) palliative care
+
+```{r}
+# create long versions of weekend time with changes for in hours vs other hours
+# takes a while due to loop
+weekend_time_palliative = weekend_time(for_model_palliative) # see 99_functions.R
+
+# run Cox model
+cox_model_palliative_in_hours = coxph(Surv(time = start, time2=end, event = event==1) ~ int_time_n + I(age/5) + pt_sex + in_hours + strata(team), data = weekend_time_palliative)
+ests = tidy(cox_model_palliative_in_hours, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+ft = flextable(ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
+Palliative care referals are far more likely to occur in-hours.
+
+# Exploratory analysis of time to high-risk
+
+Time between patient admission to the recruited clinical team to first high-risk CriSTAL or SPICT-positive identification in the usual care phase with the corresponding duration in the intervention phase. We use the form complete time to determine the time of CriSTAL or SPICT-positive. This analysis is just for those found to be at risk.
+
+```{r}
+# time from admission to median form
+explore = select(baseline, hospital, participant_id, at_risk, int_time, admission_datetime, median_form) %>%
+  filter(at_risk =='At risk') %>% # just at risk
+  mutate(time = (as.numeric(median_form) - as.numeric(admission_datetime))/(60*60*24)) # in days
+hplot = ggplot(data=explore, aes(x=int_time, y=time))+
+  geom_boxplot()+
+  xlab('')+
+  ylab('Time from admission, days')+
+  coord_flip()+
+  g.theme+
+  facet_wrap(~hospital)
+hplot
+```
+
+_This plot will not work until the scrambling is undone._

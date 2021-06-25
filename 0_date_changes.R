@@ -1,6 +1,6 @@
 # 0_date_changes.R
 # date changes per hospital, including key randomised dates
-# Sep 2020
+# June 2021
 library(dplyr)
 library(tidyr)
 library(ggplot2)
@@ -28,5 +28,10 @@ check_plot
 date_changes = spread(date_changes, event, date) %>%
   select('hospital','date_usual_care','date_establishment','date_intervention','date_post','date_end') # ordering
 
+# keep dates for intervention and end of intervention (date_post) and change to times
+date_changes_time = select(date_changes, hospital, date_intervention, date_post) %>% # 
+  mutate(date_intervention = as.POSIXct(paste(date_intervention,'23:59', tz='Australia/Brisbane')), # make dates into date/times; one minute before midnight for end of day
+         date_post = as.POSIXct(paste(date_post,'23:59', tz='Australia/Brisbane')))  
+
 # save
-save(date_changes, file='data/date_changes.RData')
+save(date_changes, date_changes_time, file='data/date_changes.RData')

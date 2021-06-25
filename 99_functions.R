@@ -189,18 +189,20 @@ time_to_first = function(form,
     select(-is.missing) # no longer needed
   
   #### make a list of events per patients, include 'yes', 'no', 'censored' and 'dead' ####
-  # TO DO, add date of death once it is available  
+  
+  # alternative attempt ...
   
   ## get censoring dates and add dates to all patients
   # i) censoring of those still in hospital at change-over time
   # ii) censoring at end of the intervention exposure (by hospital)
+  # iii) censoring for those discharged (competing risk)
   load('data/date_changes.RData') # 0_date_changes.R
   complete_d = select(complete, participant_id, hosp_discharge_date) # small data set for merging below
   censor_dates = select(date_changes, hospital, date_intervention, date_post) %>% # keep dates for intervention and end of intervention
     mutate(date_intervention = as.POSIXct(paste(date_intervention,'23:59', tz='Australia/Brisbane')), # make dates into date/times; one minute before midnight for end of day
            date_post = as.POSIXct(paste(date_post,'23:59', tz='Australia/Brisbane'))) %>% 
     right_join(form, by='hospital') %>%
-    right_join(complete_d, by='participant_id') %>% # add team discharge date
+    right_join(complete_d, by='participant_id') %>% # add hospital/team discharge date
     select(participant_id, hosp_discharge_date, date_intervention, date_post) %>%
     tidyr::gather(`date_intervention`,`date_post`, key='change_var', value='form_date', -`participant_id`, -`hosp_discharge_date`) %>% # names to match REDCap data
     unique() %>% # just one set of dates per patient
@@ -212,7 +214,7 @@ time_to_first = function(form,
     filter(!is.na(form_date),
            !is.na(change_var)) # remove small amount with missing data
   
-  ## in-hospital death date, to do. Only deaths in hospital during the same admission. not collected this data
+  ## TO DO: in-hospital death date. Only deaths in hospital during the same admission. not collected this data
   # death_date = select()
   
   # find first yes
@@ -259,7 +261,7 @@ time_to_first = function(form,
            time_change = ifelse(time_change < 0 & time_change >= -(2/24) & change_var=='Yes', 0, time_change), # also update time change
            # if date is negative then it happened before this admission:  
            change_var = as.character(change_var), # from factor to character
-           change_var = ifelse(time_change < 0 & change_var=='Yes', "Prior", change_var)) %>% # if time change is negative and they had a form, then it happened prior to this admission
+           change_var = ifelse(time_change <= 0 & change_var=='Yes', "Prior", change_var)) %>% # if time change is negative/zero and they had a form, then it happened prior to this admission
     select(-at_risk)  # drop no longer needed
   ## final bespoke steps per outcome
   # i) additional step for prior for outcome 4 only
@@ -329,35 +331,63 @@ time_to_first = function(form,
 } # end of function
 
 #### function to create circular plots of days and times ###
-circular_plots = function(indata){
+# standardise by time otherwise comparison is meaningless #
+circular_plots = function(indata, var, datetime){
+  # simple rename
+  names(indata)[names(indata)==var] = 'change_var'
+  names(indata)[names(indata)==datetime] = 'outcome_date'
   # create date/time variables
-  to_plot = filter(indata, change_var == 'Yes') %>% # just where there was an outcome
+  to_plot = filter(indata, 
+                   int_time %in% c('Usual care','Intervention'), # too busy to also plot Establishment  
+                   change_var == 'Yes') %>% # just where there was an outcome
     mutate(dow = format(outcome_date, '%w'),
            dow = factor(dow, levels=0:6, labels=c('Sun','Mon','Tue','Wed','Thu','Fri','Sat')),
            hour = as.numeric(format(outcome_date, '%H')),
            missing = substr(outcome_date, 12, 16) %in% c('00:00','23:59'), # two dummy times for missing
            missing = ifelse(is.na(outcome_date)==TRUE, TRUE, missing),
            hour = ifelse(missing==TRUE, NA, hour)) %>% # blank hour if it's missing
-    select(participant_id, outcome_date, dow, hour, missing)
+    select(participant_id, outcome_date, int_time, dow, hour, missing, hospital)
   n_missing = sum(to_plot$missing)
   to_plot = filter(to_plot, missing==FALSE)
+  # standardise numbers by days of period; standardise to per week
+  load('data/date_changes.RData')
+  date_changes = mutate(date_changes, 
+                        days_uc = 1 + as.numeric(date_establishment) - as.numeric(date_usual_care),
+                        days_int = 1 + as.numeric(date_post) - as.numeric(date_intervention  )) %>%
+    select(hospital, starts_with('days_'))
+  standard_dow = left_join(to_plot, date_changes, by='hospital') %>%
+    group_by(hospital, dow, int_time, days_uc, days_int) %>%
+    tally() %>%
+    mutate(stan = ifelse(int_time=='Usual care', n/(days_uc/7), n/(days_int/7))) %>% 
+    ungroup () 
+  standard_hour = left_join(to_plot, date_changes, by='hospital') %>%
+    group_by(hospital, hour, int_time, days_uc, days_int) %>%
+    tally() %>%
+    mutate(stan = ifelse(int_time=='Usual care', n/(days_uc/7), n/(days_int/7))) %>% 
+    ungroup () 
   # day of the week
-  week_plot = ggplot(data=to_plot, aes(x=dow))+
+  week_plot = ggplot(data=standard_dow, aes(x=dow, y=stan, fill=hospital))+
     ggtitle('Day of week')+
-    geom_histogram(stat='count', fill='khaki1')+
+    geom_histogram(stat='identity')+
+    scale_fill_manual('Hospital', values=cbPalette)+
     coord_polar()+
     xlab('')+
-    ylab('Count')+
-    theme_bw()
+    ylab('Numbers per week')+
+    theme_bw()+
+    theme(legend.position = 'top') + 
+    facet_wrap(~int_time)
   # hour of the day
-  hour_plot = ggplot(data=to_plot, aes(x=hour))+
+  hour_plot = ggplot(data=standard_hour, aes(x=hour, y=stan, fill=hospital))+
     ggtitle('Hour of day')+
-      geom_histogram(stat='count', fill='plum2')+
-      coord_polar()+
+    geom_histogram(stat='identity')+
+    scale_fill_manual('Hospital', values=cbPalette)+
+    coord_polar()+
     scale_x_continuous(limits=c(0,24), breaks=c(0,6,12,18))+
-      xlab('')+
-      ylab('Count')+
-    theme_bw()
+    xlab('')+
+    ylab('Numbers per week')+
+    theme_bw()+
+    theme(legend.position = 'top') + 
+    facet_wrap(~int_time)
   ret = list()
   ret$week = week_plot
   ret$hour = hour_plot
@@ -387,11 +417,132 @@ int_time = function(indata){
 # nice rename for variables in multiple variable models
 nice_rename = function(invar){
   invar = case_when(
-    str_detect(invar, pattern='age/5') == TRUE ~ "Age (+5 years)",
+    str_detect(invar, pattern='age.5') == TRUE ~ "Age (+5 years)",
     str_detect(invar, pattern='pt_sexFemale') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='pt_sexUnknown') == TRUE ~ "Sex (Unknown)",
     str_detect(invar, pattern='int_timeIntervention') == TRUE ~ "Intervention",
+    str_detect(invar, pattern='int.time.n') == TRUE ~ "Intervention",
+    str_detect(invar, pattern='in_hoursTRUE') == TRUE ~ "In-hours",
     TRUE ~ invar
   )
   return(invar)
 }
+
+### make longitudinal survival data with in-hours versus out-of-hours
+weekend_time = function(indata){
+  long_data = NULL
+  # loop through each patient
+  for (k in 1:nrow(indata)){
+    this = indata[k,]
+    in_minutes = data.frame(datetime = seq(this$datetime_1, this$datetime_2, 60)) %>%# progress in minutes
+      mutate(day = as.numeric(format(datetime, '%u')), # 1 = Monday
+             hour = as.numeric(format(datetime, '%H')),
+             in_hours = day<=5 & hour>=9 & hour<=16) %>% # in hours 9:00am to 4:59pm or not weekend
+      select(-day, -hour) # no longer needed
+    
+    # now find time changes
+    index = which(diff(in_minutes$in_hours)!=0)
+    index = c(1, index, nrow(in_minutes)) # at first and last observations
+    rows = in_minutes[index,] %>% # pick out key times
+      mutate(dummy = 1,
+             start = 0,
+             end = (as.numeric(datetime) - as.numeric(datetime[1]))/(60*60*24), # time in fraction of days
+             event = 0)
+    # now make survival times start and end times
+    rows$start[2:nrow(rows)] = rows$end[1:(nrow(rows)-1)]
+    rows$event[nrow(rows)] = 1 # only last row has the event
+    rows = filter(rows, end > 0) 
+    # add patient-level data
+    to_add = select(this, -event, -starts_with('datetime')) %>%
+      mutate(dummy = 1)
+    rows = left_join(to_add, rows, by='dummy') %>%
+      mutate(event = event* as.numeric(this$event=='Yes')) # event only on last day and if 'Yes'
+    # concatenate 
+    long_data = bind_rows(long_data, rows)
+  }
+  
+  #
+  return(long_data)
+}
+
+
+### make survival data using calendar time
+calendar_time = function(indata){
+  # start of usual care
+  ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz='Australia/Brisbane')
+  ref_datetime = as.numeric(ref_datetime)
+  # calculate difference from usual care date/time
+  outdata = mutate(indata, 
+                   start = (as.numeric(datetime_1) - ref_datetime)/(60*60*24),
+                   end = (as.numeric(datetime_2) - ref_datetime)/(60*60*24))
+  #
+  return(outdata)
+}
+
+
+## function to calculate risk difference for survival models, with bootstrap CIs
+risk_diff = function(
+  indata = NULL,
+  inmodel = NULL,
+  B = 100, # number of boostrap statistics
+  pred_time = 0 # time to predict difference at
+){
+  # see https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6015956/
+  # find largest team
+  tab = table(indata$team)
+  tab = tab[order(-tab)]
+  largest = names(tab[1])
+  # adjust formula
+  char_formula = as.character(inmodel$call)
+  new_formula = str_replace(string=char_formula[2], pattern='strata', replacement='strat')
+  #paste(c(char_formula[2], '~', str_replace(string=char_formula[3], pattern='strata', replacement='strat')), collapse=' ') # rms uses strat no strata
+  # refit Cox model using rms package
+  cox_rms = cph(as.formula(new_formula), data = indata, surv=TRUE, x=TRUE, y=TRUE)
+  # set up predictions, age at median, female, largest team
+  pred_data = data.frame(int_time_n = c(0,1), pt_sex = 'Female', age=84, team=largest)
+  pred_sur = survest(cox_rms, newdata=pred_data, times=pred_time)
+  # bootstrap intervals
+  boots <- boot(data = indata,
+                  statistic = rdnnt, # see other function
+                  R = B, # number of bootstraps
+                  frm = as.formula(new_formula),
+                  pred_time = pred_time,
+                  pred_data = pred_data)
+  ci = boot.ci(boots, conf=0.95, type= 'norm') 
+  ci = as.numeric(ci$normal[2:3]) # just extract CIs
+  #
+  dp = 2 # decimal places
+  preds = as.data.frame(pred_sur) %>%
+    mutate(
+      Survival = round(surv, dp),
+      lower = round(lower, dp),
+      upper = round(upper, dp),
+      CI = paste(lower, ' to ', upper, sep=''),
+      Phase = c('Usual care','Intervention')) %>%
+    select(Phase, Survival, CI)
+  # difference
+  frame = data.frame(Phase = 'Difference', 
+                     Survival = round(diff(pred_sur$surv), dp),
+                     CI = paste(round(ci[1],dp), ' to ', round(ci[2],dp), sep=''))
+  to_table = bind_rows(preds, frame)
+  return(to_table)
+}
+
+## function for bootstrap confidence intervals for absolute risk difference in Cox model
+# adapted from https://atm.amegroups.com/article/viewFile/18926/pdf
+rdnnt <- function(data, 
+                  ii, 
+                  frm, # formula 
+                  pred_time, # time to predict at
+                  pred_data) # data frame for predictions
+{
+  dd <- data[ii,]; # allows boot to select a sample
+  cfit <- cph(formula = frm, data=dd,
+              surv=TRUE, x=TRUE, y=TRUE);
+  pred_sur = survest(cfit, newdata=pred_data, times=pred_time)
+  RD <- diff(pred_sur$surv) # risk difference
+  #cat('.'); # updater
+  return(RD);
+}
+
+
