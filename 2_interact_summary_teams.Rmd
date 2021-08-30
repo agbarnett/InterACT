@@ -288,34 +288,33 @@ with(baseline, freq(`CriSTAL positive`, cumul=FALSE, report.nas = FALSE))
 The results below exclude those with incomplete follow-up forms.
 
 ```{r, results = 'asis'}
-outcome_data = bind_rows(clinicianled_review,
-                      care_directive,
-                      palliative_care_referral, .id='outcome') %>%
-  left_join(select(baseline, participant_id, spict_unplan_hosp), by='participant_id') %>% # add back unplanned adm
-  select(outcome, change_var, spict_unplan_hosp) %>%
-  filter(!is.na(change_var)) %>% # remove few missing
-  mutate(outcome = factor(as.numeric(outcome), levels=1:3,
+# changed to survival_data1
+to_summary = left_join(survival_data1, select(baseline, participant_id, spict_unplan_hosp), by='participant_id') %>% # add back unplanned adm
+  select(outcome, event, spict_unplan_hosp) %>%
+  filter(!is.na(event)) %>% # remove few missing
+  mutate(outcome = factor(outcome, levels=c('care_review','care_directive','palliative_care_referral'),
                           labels=c('Clinician-led care review discussion','Review of any care directives','Referred to palliative care')))
 
 ## now make table
-one_table = group_by(outcome_data, outcome, change_var) %>%
+one_table = group_by(to_summary, outcome, event) %>%
   summarise(n = n()) %>%
   group_by(outcome) %>%
   mutate(pct = round(100*prop.table(n)),
          pct = paste(pct, '%', sep=''),
          cell = paste(n, ' (', pct, ')', sep='')) %>%
-  select(outcome, change_var, cell) %>%
+  select(outcome, event, cell) %>%
   group_by(outcome) %>%
-  tidyr::spread(change_var, cell) %>%
+  tidyr::spread(event, cell) %>%
   mutate(Prior = ifelse(is.na(Prior), '0 (0%)', Prior),
          Yes = ifelse(is.na(Yes), '0 (0%)', Yes))
 # total column
-total_column = group_by(outcome_data, outcome) %>%
+total_column = group_by(to_summary, outcome) %>%
   summarise(Total = n()) %>%
   mutate(Total = paste(Total, '(100%)')) %>%
   ungroup()
 # combine table and totals
-one_table = left_join(one_table, total_column, by='outcome')
+one_table = left_join(one_table, total_column, by='outcome') %>%
+  select(outcome, Prior, Yes, No, Total)
 # make table
 ft = flextable(one_table) 
 autofit(ft)
@@ -327,19 +326,21 @@ autofit(ft)
 
 ```{r, fig.width=7, fig.height=4}
 #
-stats = group_by(outcome_data, outcome, change_var) %>%
+to_summary = mutate(to_summary, event = factor(event, levels=c('Prior','Yes','No')))
+#
+stats = group_by(to_summary, outcome, event) %>%
   summarise(n = n()) %>%
   group_by(outcome) %>%
   mutate(pct = round(100*prop.table(n)),
          pct = paste(pct, '%'))
 # plot
-cplot = ggplot(data=outcome_data, aes(x=change_var, fill=change_var))+
+cplot = ggplot(data=to_summary, aes(x=event, fill=event))+
   geom_bar()+
   scale_fill_manual(NULL, values=c("#66CDAA", "#1C86EE", "#C1CDCD"))+
   xlab('')+
   ylab('Number of patients')+
   g.theme +
-  geom_text(data=stats, aes(x=change_var, y=n, label=pct), col=grey(0.1), nudge_y=1)+ # nudge to push text onto bars
+  geom_text(data=stats, aes(x=event, y=n, label=pct), col=grey(0.1), nudge_y=1)+ # nudge to push text onto bars
   facet_wrap(~outcome)+
   theme(legend.position = 'none')
 cplot

@@ -41,6 +41,7 @@ for (index in 1:N){
 
 #### create report for ortho split by unplanned or planned admission (16 sep 2020) ##
 # get the data (need to repeat for every loop)
+split = function(){
 load('data/FullData.RData') # from 0_read_data.R
 # remove pre-covid data (just version 3 REDcap onwards)
 baseline = filter(baseline, 
@@ -61,6 +62,7 @@ outfile = paste("team_reports/", this_hospital, str_remove_all(string=this_team,
 rmarkdown::render(input = "2_interact_summary_teams_split.Rmd",
                   output_format = "pdf_document",
                   output_file = outfile)
+} # end of split
 
 #### create report for vascular by inter-hospital transfer (20 nov 2020) ##
 # turn off, not that helpful

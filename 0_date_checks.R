@@ -1,26 +1,22 @@
 # 0_date_checks.R
 # checks of dates
-# April 2021
+# June 2021
 library(openxlsx)
 library(dplyr)
+library(tidyr)
 library(stringr)
 load('data/FullData.RData') # from 0_read_data_redcap.R
 
 # have to rename date/times as they all use same name
 care_directive = rename(care_directive, 
-                        'time_4' = 'time_change',
-                        'form_date_care_directive' = 'form_date',
-                        'outcome_date_care_directive' = 'outcome_date') %>%
-  select(-at_risk_date) # just keep for one form
+                        'form_date' = 'start_date_time_5' ,
+                        'outcome_date' = 'date_time_5' ) 
 clinicianled_review = rename(clinicianled_review, 
-                         'time_5' = 'time_change',
-                         'form_date_clinicianled_review' = 'form_date',
-                         'outcome_date_clinicianled_review' = 'outcome_date')%>%
-  select(-at_risk_date) # just keep for one form
+                         'form_date' = 'start_date_time_4',
+                         'outcome_date' = 'time_care_review' )
 palliative_care_referral = rename(palliative_care_referral, 
-                                  'time_6' = 'time_change',
-                                  'form_date_palliative_care' = 'form_date',
-                                  'outcome_date_palliative_care' = 'outcome_date')
+                      'form_date' = 'start_date_time_6',
+                      'outcome_date' = 'pall_date')
 
 
 ## 1) looking at times 
@@ -77,7 +73,7 @@ problem_ids = left_join(problem_dates, dates, by='participant_id') %>%
   mutate(problem = diff >= 10000000) %>%
   select(-median, -diff, -n)
 
-## output to excel
+## output to Excel
 hs1 <- createStyle(fgFill = "black", textDecoration = "Bold", fontColour = "white") # header style
 wb <- createWorkbook("Barnett")
 #
@@ -98,3 +94,111 @@ setColWidths(wb, sheet = 3, cols = 1:6, widths = "auto")
 #
 saveWorkbook(wb, file = "checks/date_checks.xlsx", overwrite = TRUE)
 
+############
+## check for discharge dates before admissions ##
+discharge = select(complete, redcap_version, participant_id, hosp_discharge_date)
+admission = select(baseline, participant_id, admission_datetime)
+together = full_join(admission, discharge, by='participant_id') %>%
+  filter(redcap_version==3, 
+         as.Date(admission_datetime) > as.Date('2020-05-25'), # after new start date
+         !is.na(admission_datetime), # must have admission date/time
+         hosp_discharge_date <= admission_datetime ) %>%
+  select(-redcap_version) %>%
+  mutate(problem = case_when(
+    hosp_discharge_date == admission_datetime ~ "Same admission and discharge date/time",
+    hosp_discharge_date < admission_datetime ~ "Discharge before admission"
+  ))
+table(together$problem)
+# check for missing discharge for those with discharge yes
+discharge = select(complete, redcap_version, participant_id, discharge_hosp, hosp_discharge_date)
+admission = select(baseline, participant_id, admission_datetime)
+together2 = full_join(admission, discharge, by='participant_id') %>%
+  filter(redcap_version==3, 
+         as.Date(admission_datetime) > as.Date('2020-05-25'), # after new start date
+         discharge_hosp == 'Yes',
+         !is.na(admission_datetime), # must have admission date/time
+         is.na(hosp_discharge_date)) %>%
+  select(-redcap_version, -discharge_hosp) %>%
+  mutate(problem = 'Discharged but no date')
+# Put both problems together
+together = bind_rows(together, together2) %>%
+  mutate(num = as.numeric(str_remove_all(participant_id, 'V3|_|[A-Z]'))) %>%
+  arrange(num) %>%
+  select(-num)
+  
+## output to Excel
+hs1 <- createStyle(fgFill = "black", textDecoration = "Bold", fontColour = "white") # header style
+wb <- createWorkbook("Barnett")
+#
+addWorksheet(wb, sheetName = "GCUH")
+f = filter(together, str_sub(participant_id,1,4)=='GCUH')
+writeData(wb, sheet=1, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 1, cols = 1:4, widths = "auto")
+#
+addWorksheet(wb, sheetName = "TPCH")
+f = filter(together, str_sub(participant_id,1,4)=='TPCH')
+writeData(wb, sheet=2, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 2, cols = 1:4, widths = "auto")
+#
+addWorksheet(wb, sheetName = "RBWH")
+f = filter(together, str_sub(participant_id,1,4)=='RBWH')
+writeData(wb, sheet=3, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 3, cols = 1:4, widths = "auto")
+#
+saveWorkbook(wb, file = "checks/date_checks_discharge.xlsx", overwrite = TRUE)
+
+### DOES NOT WORK, AS IDS WERE NOT CHRONOLOGICAL: "Sometimes we had to delete records as they were duplicates or something like that, then this left a blank record in REDCap that the auditors filled in next time "
+# plot dates by ID to look for outliers
+diffs = filter(baseline, redcap_version == 3) %>%
+  mutate(num = as.numeric(str_remove_all(participant_id, '_V3|_|GCUH|TPCH|RBWH'))) %>%
+  group_by(hospital) %>%
+  arrange(hospital, num) %>%
+  select(participant_id, hospital, num, admission_date)
+with(diffs, plot(admission_date))
+d = as.numeric( diff(diffs$admission_date))
+index = which(d > 100)
+problems = diffs[index,] %>% # get problem IDs
+  mutate(id=num)
+# now look at people either side - TO DO
+problems1 = mutate(problems, id=num, num = num - 1)
+problems2 = mutate(problems, id=num, num = num + 1)
+all_problems = bind_rows(problems, problems1, problems2, .id='problem') %>%
+  select(-admission_date, -participant_id) %>% # remove same admission date
+  left_join(diffs, by=c('hospital','num')) %>%
+  arrange(hospital, id, num) %>%
+  select(hospital, id, participant_id, admission_date)
+# add empty rows for excel
+empty = select(all_problems, hospital, id) %>% unique()
+all_problems = bind_rows(all_problems, empty) %>% 
+  arrange(hospital, id)
+## output to Excel
+hs1 <- createStyle(fgFill = "black", textDecoration = "Bold", fontColour = "white") # header style
+wb <- createWorkbook("Barnett")
+#
+addWorksheet(wb, sheetName = "GCUH")
+f = filter(all_problems, hospital=='GCUH')
+writeData(wb, sheet=1, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 1, cols = 1:4, widths = "auto")
+#
+addWorksheet(wb, sheetName = "TPCH")
+f = filter(all_problems, hospital=='TPCH')
+writeData(wb, sheet=2, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 2, cols = 1:4, widths = "auto")
+#
+addWorksheet(wb, sheetName = "RBWH")
+f = filter(all_problems, hospital=='RBWH')
+writeData(wb, sheet=3, x=f, headerStyle = hs1)
+setColWidths(wb, sheet = 3, cols = 1:4, widths = "auto")
+#
+saveWorkbook(wb, file = "checks/date_checks_differences.xlsx", overwrite = TRUE)
+
+## impossible dates for outcomes 4,5,6
+#
+filter(clinicianled_review, outcome_date <= ISOdatetime(2019,1,1,0,0,0)) %>% select(participant_id, outcome_date)
+filter(clinicianled_review, outcome_date > ISOdatetime(2021,7,1,0,0,0)) %>% select(participant_id, outcome_date)
+#
+filter(palliative_care_referral, outcome_date <= ISOdatetime(2019,1,1,0,0,0)) %>% select(participant_id, outcome_date)
+filter(palliative_care_referral, outcome_date > ISOdatetime(2021,7,1,0,0,0)) %>% select(participant_id, outcome_date)
+#
+filter(care_directive, outcome_date  <= ISOdatetime(2019,1,1,0,0,0)) %>% select(participant_id, outcome_date )
+filter(care_directive, outcome_date  > ISOdatetime(2021,7,1,0,0,0)) %>% select(participant_id, outcome_date )

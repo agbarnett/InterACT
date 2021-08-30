@@ -1,6 +1,6 @@
 # read the data from redcap using the export function from REDCap
 # Use all three versions of REDCAP databases
-# June 2021
+# August 2021
 library(readxl)
 library(tidyr)
 library(dplyr)
@@ -201,6 +201,7 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
          'int_hosp_trans' # new variable (20-11-2020), just RBWH Vascular
          ) %>%
   mutate(
+    pt_sex_factor = droplevels(pt_sex_factor), # drop `unknown`
     int_hosp_trans = factor(int_hosp_trans, levels=1:3, labels=c('Yes',"No",'Unknown')),
     # tidy up URN:
     urn = str_remove_all(urn, pattern='^   |^  |^ '), # remove starting spaces
@@ -217,26 +218,14 @@ baseline = filter(all_data, redcap_event_name_factor == 'Baseline screening') %>
     cristal_cfs_score = ifelse(cristal_cfs_score==1, NA, cristal_cfs_score), # 1 is unknown ...
     cristal_cfs_score = cristal_cfs_score - 1, # ... now shift scores down by 1
     # cristal score (changed by version)
-    cristal_score = ifelse(redcap_version==2, cristal_score, total_cristal_score),
-    # at risk, so cristal or spict positive
-    at_risk = pmax(cristal_score>=6, spict_score>=2), # mistake (fixed 18-Nov-2020, cristal was at 5)
-    at_risk = factor(at_risk, levels=0:1, labels=c('Not at risk','At risk'))) %>% 
+    cristal_score = ifelse(redcap_version==2, cristal_score, total_cristal_score)) %>%
   select(-cristal_stroke) %>% # remove stroke; just this one because of data error
   # renaming
   rename('age' = "pt_age") %>%
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) %>% # remove _factor from variable names
   select(-hour, -min, -total_cristal_score) # drop calculated variables and duplicates
-# tidy up URN, had to do using loop
-for (k in 1:nrow(baseline)){
-  baseline$urn[k]= ifelse(str_detect(baseline$urn[k], pattern='-')==TRUE, 
-                          str_sub(baseline$urn[k], 1, str_locate_all(baseline$urn[k], pattern='-')[[1]][1]-1), baseline$urn[k]) # remove visit number from some URNs
-}
-# check for conversion errors, this flags mis-entered URNs
-z = baseline$urn
-x = as.numeric(baseline$urn)
-z[is.na(x)]
-baseline = mutate(baseline, urn = as.numeric(urn)) # convert to number for matching
-# calculate times for form completion
+
+# calculate times for form completion; need to do now because need median.form date for spict threshold
 for (k in 1:nrow(baseline)){
   baseline$admission_datetime[k] = ifelse(baseline$admission_datetime[k]=='', NA, as.POSIXct(baseline$admission_datetime[k], tz='Australia/Brisbane'))
   baseline$start_date_time_dem[k] = ifelse(baseline$start_date_time_dem[k]=='', NA, as.POSIXct(baseline$start_date_time_dem[k], tz='Australia/Brisbane'))
@@ -252,8 +241,8 @@ for (k in 1:nrow(baseline)){
 }
 ## add screening start time by taking earliest date from REDCap forms
 form_dates = select(baseline, participant_id, 
-                   # start_date_time_hosp, # do not use hospital form , this was sometimes completed long after other forms
-                   start_date_time_dem,
+                    # start_date_time_hosp, # do not use hospital form , this was sometimes completed long after other forms
+                    start_date_time_dem,
                     start_date_time_clinical,
                     start_date_time_funct,
                     start_date_time_comorb) %>%
@@ -276,19 +265,51 @@ write.csv(check, file='checks/form_dates.csv', row.names = FALSE, quote=FALSE)
 # add median date to baseline data
 baseline = left_join(baseline, median, by='participant_id') %>%
   select(-range) # no longer needed
+# consistently format dates
+baseline = mutate(baseline,
+         admission_datetime = as.POSIXct(as.numeric(admission_datetime), origin='1970-01-01', tz='Australia/Brisbane'),
+         median_form = as.POSIXct(as.numeric(median_form), origin='1970-01-01', tz='Australia/Brisbane'))
 # everyone should have a date, so should be nobody
 missing_date = filter(baseline, is.na(median_form))
 if(nrow(missing_date)>0){
   cat('Warning missing date for ', missing_date$participant_id,'.\n',sep='')
 }
 
+# at risk, so cristal or spict positive - this is time-dependent, fixed August 2021
+source('0_make_at_risk_dates.R')
+baseline = mutate(baseline,
+                  date_seen = coalesce(admission_datetime, median_form), # use date transferred to this team, this was the time they were at risk from - sometimes missing; use median_form for those where this is missing
+                  date_seen = as.Date(format(date_seen, '%Y-%m-%d')), 
+      t1 = paste('GCUH - ', gcuh_team, sep=''),  # add single team variable
+      t2 = paste('RBWH - ', rbwh_team, sep=''),
+      t3 = paste('TPCH - ', tpch_team, sep=''),
+      team = '',
+      team = ifelse(is.na(gcuh_team)==FALSE, t1, team),
+      team = ifelse(is.na(rbwh_team)==FALSE, t2, team),
+      team = ifelse(is.na(tpch_team)==FALSE, t3, team)) %>%
+  select(-t1, -t2, -t3) %>% # no longer needed
+  left_join(time_dependent_threshold, by=c('team','date_seen')) %>% # merge in time-dependent SPICT threshold by team and date
+  mutate(at_risk = pmax(cristal_score >= 6, spict_score >= spict_threshold), # mistake (fixed 18-Nov-2020, cristal was at 5)
+         at_risk = factor(at_risk, levels=0:1, labels=c('Not at risk','At risk'))) 
+
+# tidy up URN, had to do using loop
+for (k in 1:nrow(baseline)){
+  baseline$urn[k]= ifelse(str_detect(baseline$urn[k], pattern='-')==TRUE, 
+                          str_sub(baseline$urn[k], 1, str_locate_all(baseline$urn[k], pattern='-')[[1]][1]-1), baseline$urn[k]) # remove visit number from some URNs
+}
+# check for conversion errors, this flags mis-entered URNs; there are none for version 3
+z = baseline$urn
+x = as.numeric(baseline$urn)
+z[is.na(x)]
+baseline = mutate(baseline, urn = as.numeric(urn)) # convert to number for matching
+
 # convert form completion time differences to numbers
 baseline = mutate(baseline, 
                   time_dem = (as.numeric(end_date_time_dem) - as.numeric(start_date_time_dem))/60, # time in minutes
                   time_hosp = (as.numeric(end_date_time_hosp) - as.numeric(start_date_time_hosp))/60, # time in minutes
                   time_funct = (as.numeric(end_date_time_funct) - as.numeric(start_date_time_funct))/60,
-                  time_comorb = (as.numeric(end_date_time_comorb) - as.numeric(start_date_time_comorb))/60,
-) 
+                  time_comorb = (as.numeric(end_date_time_comorb) - as.numeric(start_date_time_comorb))/60) %>%
+  select(-starts_with('start_date_time'), -starts_with('end_date_time')) # do not need these date/time variables any more
 
 # add complete to baseline and change at-risk if baseline not complete
 completed = filter(complete, screening_completion_complete == 'Complete')
@@ -303,22 +324,7 @@ baseline = mutate(baseline,
 baseline = mutate(baseline, at_risk = ifelse(baseline_screening_complete=="No", 1, at_risk), # not at risk if baseline screening not complete (likely left hospital); changed 12-dec-2020
                   at_risk = factor(at_risk, levels=1:2, labels=c('Not at risk','At risk'))) # have to reformat factor
 
-# consistently format dates
-baseline = select(baseline, -starts_with('start_date_time'), -starts_with('end_date_time')) %>% # do not need these date/time variables
-  mutate(admission_datetime = as.POSIXct(as.numeric(admission_datetime), origin='1970-01-01', tz='Australia/Brisbane'),
-         median_form = as.POSIXct(as.numeric(median_form), origin='1970-01-01', tz='Australia/Brisbane'),
-         # add single team variable
-         t1 = paste('GCUH - ', gcuh_team, sep=''),
-         t2 = paste('RBWH - ', rbwh_team, sep=''),
-         t3 = paste('TPCH - ', tpch_team, sep=''),
-         team = '',
-         team = ifelse(is.na(gcuh_team)==FALSE, t1, team),
-         team = ifelse(is.na(rbwh_team)==FALSE, t2, team),
-         team = ifelse(is.na(tpch_team)==FALSE, t3, team)
-         ) %>%
-  select(-t1, -t2, -t3) # no longer needed
-
-#### add intervention dates to baseline based on dates ###
+#### add intervention dates to baseline based on admission and form dates ###
 baseline = int_time(baseline) # see 99_functions.R
 int_time_data = select(baseline, participant_id, int_time) # smaller data with just intervention time (used below)
 
@@ -351,16 +357,20 @@ clinicianled_review = mutate(clinicianled_review,
                              time_care_review = as.POSIXct(as.numeric(time_care_review), origin='1970-01-01', tz='Australia/Brisbane'))
 clinicianled_review = left_join(clinicianled_review, int_time_data, by='participant_id') # add categorical intervention time
 # now get the survival data (function takes a little while)
-surv_data = make_survival_times( # from 98_survival_function.R
+surv_data_both = make_survival_times( # from 98_survival_function.R
   indata = baseline,
   date_changes_time = date_changes_time,
   form = clinicianled_review ,
   change_var = 'care_review',
   outcome_date = 'time_care_review',  # date/time review occurred
   form_date = 'start_date_time_4',
-  at_risk_date = 'admission_datetime') %>%
-  mutate(outcome = 'care_review')
-survival_data = surv_data
+  at_risk_date = 'admission_datetime') 
+# make both versions of the survival data (with and without discharge censoring)
+survival_data1 = survival_data2 = NULL # start with NULL
+v1 = mutate(surv_data_both$version1, outcome = 'care_review')
+v2 = mutate(surv_data_both$version2, outcome = 'care_review')
+survival_data1 = bind_rows(survival_data1, v1)
+survival_data2 = bind_rows(survival_data2, v2)
 
 # ii) care directive
 # do not include 'datediff_care_directive', as calculated using function instead
@@ -389,16 +399,19 @@ care_directive = mutate(care_directive,
                         date_time_5 = as.POSIXct(as.numeric(date_time_5), origin='1970-01-01', tz='Australia/Brisbane'))
 care_directive = left_join(care_directive, int_time_data, by='participant_id') # add categorical intervention time
 # now get the survival data (function takes a little while)
-surv_data = make_survival_times(
+surv_data_both = make_survival_times(
   indata = baseline,
   date_changes_time = date_changes_time,
   form = care_directive ,
   change_var = 'change_5',
   form_date = 'start_date_time_5',
   outcome_date = 'date_time_5', 
-  at_risk_date = 'admission_datetime') %>% # assuming at risk from admission
-  mutate(outcome = 'care_directive')
-survival_data = bind_rows(survival_data, surv_data)
+  at_risk_date = 'admission_datetime')  # assuming at risk from admission
+# make both versions of the survival data (with and without discharge censoring)
+v1 = mutate(surv_data_both$version1, outcome = 'care_directive')
+v2 = mutate(surv_data_both$version2, outcome = 'care_directive')
+survival_data1 = bind_rows(survival_data1, v1)
+survival_data2 = bind_rows(survival_data2, v2)
 
 # iii) palliative_care_referral
 # do not use 'datediff_pallcare', it is calculated in REDCap; calculated time using time_to_first function instead
@@ -425,23 +438,41 @@ palliative_care_referral = mutate(palliative_care_referral,
                                   pall_date = as.POSIXct(as.numeric(pall_date), origin='1970-01-01', tz='Australia/Brisbane'))
 palliative_care_referral = left_join(palliative_care_referral, int_time_data, by='participant_id') # add categorical intervention time
 # now make the survival data - time to first referral (function takes a little while)
-surv_data = make_survival_times(
+surv_data_both = make_survival_times(
   indata = baseline,
   date_changes_time = date_changes_time,
   form = palliative_care_referral ,
   change_var = 'pall_care',
   form_date = 'start_date_time_6',
   outcome_date = 'pall_date', 
-  at_risk_date = 'admission_datetime') %>% # assuming at risk from admission
-  mutate(outcome = 'palliative_care_referral')
+  at_risk_date = 'admission_datetime') # assuming at risk from admission
+#
+# make both versions of the survival data (with and without discharge censoring)
+v1 = mutate(surv_data_both$version1, outcome = 'palliative_care_referral')
+v2 = mutate(surv_data_both$version2, outcome = 'palliative_care_referral')
+survival_data1 = bind_rows(survival_data1, v1)
+survival_data2 = bind_rows(survival_data2, v2)
+
+
 # small data set of just at-risk
 small = select(baseline, participant_id, at_risk)
 # tidy up survival data
-survival_data = bind_rows(survival_data, surv_data) %>%
-  left_join(int_time_data, by='participant_id') %>% # add intervention time (categorical variable to survival data)
+# a) version 1
+survival_data1 = left_join(survival_data1, int_time_data, by='participant_id') %>% # add intervention time (categorical variable to survival data)
   left_join(small, by='participant_id') %>%
   filter(at_risk == 'At risk') %>% # only those at risk
-  select(-at_risk) # no longer needed
+  select(-at_risk) %>% # no longer needed
+  mutate(hospital = str_sub(participant_id, 1, 4)) 
+# b) version 2
+survival_data2 = left_join(survival_data2, int_time_data, by='participant_id') %>% # add intervention time (categorical variable to survival data)
+  left_join(small, by='participant_id') %>%
+  filter(at_risk == 'At risk') %>% # only those at risk
+  select(-at_risk) %>% # no longer needed
+  mutate(hospital = str_sub(participant_id, 1, 4)) 
+# August 2021, combined version that uses version 2 for RBWH/GCUH and version 1 for TPCH
+survival_data1 = filter(survival_data1, hospital!='TPCH')
+survival_data2 = filter(survival_data2, hospital=='TPCH')
+survival_data = bind_rows(survival_data1, survival_data2)
 
 ### any 4,5,6 forms completed to baseline
 any_456 = bind_rows(care_directive, palliative_care_referral, clinicianled_review) %>%
@@ -455,7 +486,7 @@ source('0_spict_cristal_vars.R')
 
 # save
 save(thresholds, data_date, spict.vars, cristal.vars, baseline, complete, 
-     survival_data,
+     survival_data, 
      care_directive, palliative_care_referral, clinicianled_review, file='data/FullData.RData')
 
 # names(baseline)[grep('cristal_score', names(baseline))]

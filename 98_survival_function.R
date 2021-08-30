@@ -87,7 +87,7 @@ make_survival_times = function(
                        post_follow_up <=0) %>% # remove any dates after end of follow-up
       group_by(event) %>%
       arrange(event, desc(datetime)) %>% # oldest datetime first
-      slice(1) %>%   # if two or more No's in a row choose latest (works because there are no two No's in a row)
+      slice(1) %>% # if two or more No's in a row choose latest (works because there are no two No's in a row)
       ungroup() %>%
       arrange(datetime)%>%
       mutate(event_short = case_when(
@@ -113,15 +113,31 @@ make_survival_times = function(
   cat('All possible events:\n')
   print(table(all_events$events))
   
+  ## version 1 with no competing risk of discharge
   # time to first yes, not "A, Y, H" because follow-up ended after Y; not any with I before Y
   ids = filter(all_events, events %in% c('A, N, Y', 'A, Y')) %>% pull(participant_id)
   to_yes = filter(event_data, participant_id %in% ids,
                   event_short %in% c('A','Y')) # just admission and yes
   # time to last no; not any with I before N
-  ids = filter(all_events, events %in% c('A, N, H', 'A, N, D', 'A, N, P', 'A, N, I', 'A, N, I, D', 'A, N, I, P')) %>% pull(participant_id)
+  ids = filter(all_events, events %in% c('A, N, D', 'A, N, P', 'A, N, I', 'A, N, I, D', 'A, N, I, P')) %>% pull(participant_id)
   to_no = filter(event_data, participant_id %in% ids,
                  event_short %in% c('A','N')) # just admission and no
-  # now make one row per participant with survival time
+  ## version 2 with competing risk of discharge (time to yes remains the same)
+  # time to intervention (censor there)
+  ids = filter(all_events, events %in% c('A, I, D','A, I, N, D','A, I, N, P','A, I, N, Y','A, I, P','A, I, Y','A, N, I, D','A, N, I, P')) %>% pull(participant_id)
+  to_intervention = filter(event_data, participant_id %in% ids,
+                 event_short %in% c('A','I')) # just admission and intervention
+  # time to post (censor there)
+  ids = filter(all_events, events %in% c('A, P', 'A, N, P')) %>% pull(participant_id)
+  to_post = filter(event_data, participant_id %in% ids,
+                           event_short %in% c('A','P')) # just admission and post
+  # time to discharge
+  ids = filter(all_events, events %in% c('A, D', 'A, N, D')) %>% pull(participant_id)
+  to_disch = filter(event_data, participant_id %in% ids,
+                 event_short %in% c('A','D')) # just admission and discharge
+  
+  ## now make one row per participant with survival time
+  # version 1
   one_row = bind_rows(to_yes, to_no) %>%
     select(participant_id, redcap_version, event, datetime) %>%
     group_by(participant_id, redcap_version) %>%
@@ -131,9 +147,26 @@ make_survival_times = function(
     mutate(time = (as.numeric(datetime_2) - as.numeric(datetime_1))/(24*60*60)) %>% # difference in days
     select(-event_1) %>% # is always admission
     rename('event' = 'event_2')
-  
   # now put together patients with prior and those with survival time
   to_export = bind_rows(one_row, prior)
+  # version 2
+  one_row2 = bind_rows(to_yes, to_intervention, to_post, to_disch) %>%
+    select(participant_id, redcap_version, event, datetime) %>%
+    group_by(participant_id, redcap_version) %>%
+    mutate(cols = 1:n()) %>%
+    pivot_wider(id_cols=c(participant_id,redcap_version), names_from=cols, values_from=c(event, datetime)) %>%
+    ungroup() %>%
+    mutate(time = (as.numeric(datetime_2) - as.numeric(datetime_1))/(24*60*60)) %>% # difference in days
+    select(-event_1) %>% # is always admission
+    rename('event' = 'event_2')
+  # now put together patients with prior and those with survival time
+  to_export2 = bind_rows(one_row2, prior) %>%
+    mutate(event = case_when(
+      event == 'date_intervention' ~ 'Intervention',
+      event == 'date_post' ~ 'Post-intervention',
+      event == 'hosp_discharge_date' ~ 'Discharge',
+      is.character(event)==TRUE ~ event
+    ))
   
   ## random checks
   # yes
@@ -154,6 +187,9 @@ make_survival_times = function(
   print(no_form)
   
   # return
-  return(to_export) 
+  to_return = list()
+  to_return$version1 = to_export
+  to_return$version2 = to_export2
+  return(to_return) 
   
 } # end of function

@@ -1,9 +1,12 @@
 # 99_functions.R
 # helpful functions for InterACT
-# August 2020
+# July 2021
+
+# date formating
+my.date.format = function(x){y= format(x, "%d %b %Y"); return(y)} 
 
 # function for rounding numbers with zeros kept
-roundz = function(x, digits){
+roundz = function(x, digits=0){
   dformat = paste('%.', digits, 'f', sep='')
   x = sprintf(dformat, round(x, digits))
   return(x)
@@ -347,7 +350,8 @@ circular_plots = function(indata, var, datetime){
            missing = ifelse(is.na(outcome_date)==TRUE, TRUE, missing),
            hour = ifelse(missing==TRUE, NA, hour)) %>% # blank hour if it's missing
     select(participant_id, outcome_date, int_time, dow, hour, missing, hospital)
-  n_missing = sum(to_plot$missing)
+  n_missing = sum(to_plot$missing) # number missing
+  n_missing_percent = roundz(100*n_missing/nrow(to_plot))
   to_plot = filter(to_plot, missing==FALSE)
   # standardise numbers by days of period; standardise to per week
   load('data/date_changes.RData')
@@ -392,15 +396,17 @@ circular_plots = function(indata, var, datetime){
   ret$week = week_plot
   ret$hour = hour_plot
   ret$missing_hour = n_missing
+  ret$missing_hour_percent = n_missing_percent
   return(ret)
 }
 
 # add intervention time, used by 0_read_data.R and 1_interact_summary.Rmd
 int_time = function(indata){
   load('data/date_changes.RData') # from 0_date_changes.R
-  indata = left_join(indata, date_changes, by='hospital') %>%
+  outdata = left_join(indata, date_changes, by='hospital') %>%
   mutate(
-    date_seen = as.Date(format(median_form, '%Y-%m-%d')), # use median form date/time
+    date_seen = coalesce(admission_datetime, median_form), # use date transferred to this team, this was the time they were at risk from - sometimes missing; use median_form for those where this is missing
+    date_seen = as.Date(format(date_seen, '%Y-%m-%d')), 
     int_time = case_when(
     date_seen < date_usual_care ~ 0, # just versions 1 and 2, pre-covid
     date_seen >= date_usual_care & date_seen < date_establishment ~ 1,
@@ -411,24 +417,35 @@ int_time = function(indata){
   ),
   int_time = factor(int_time, levels=0:5, labels=c('Pre-COVID','Usual care','Establishment','Intervention','Post-intervention','Error'))) %>%
     select(-'date_usual_care',-'date_establishment',-'date_intervention',-'date_post',-'date_end') # no longer needed
-  return(indata)  
+  return(outdata)  
 }
 
 # nice rename for variables in multiple variable models
 nice_rename = function(invar){
   invar = case_when(
     str_detect(invar, pattern='age.5') == TRUE ~ "Age (+5 years)",
+    str_detect(invar, pattern='^age') == TRUE ~ "Age (+5 years)",
+    str_detect(invar, pattern='^pt_sex$') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='pt_sexFemale') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='pt_sexUnknown') == TRUE ~ "Sex (Unknown)",
     str_detect(invar, pattern='int_timeIntervention') == TRUE ~ "Intervention",
-    str_detect(invar, pattern='int.time.n') == TRUE ~ "Intervention",
+    str_detect(invar, pattern='int.time.n$') == TRUE ~ "Intervention",
+    str_detect(invar, pattern='^arm$') == TRUE ~ "Intervention", # for survival difference
     str_detect(invar, pattern='in_hoursTRUE') == TRUE ~ "In-hours",
+    str_detect(invar, pattern='^cristal_score$') == TRUE ~ "CriSTAL score",
+    str_detect(invar, pattern='^spict_score$') == TRUE ~ "SPICT score",
+    str_detect(invar, pattern='^int_time_n.cristal_score$') == TRUE ~ "CriSTAL x Intervention",
+    str_detect(invar, pattern='^int_time_n.spict_score$') == TRUE ~ "SPICT x Intervention",
+    str_detect(invar, pattern='^int_time_n...cristal_score$') == TRUE ~ "CriSTAL x Intervention",
+    str_detect(invar, pattern='^int_time_n...spict_score$') == TRUE ~ "SPICT x Intervention",
+    
     TRUE ~ invar
   )
   return(invar)
 }
 
 ### make longitudinal survival data with in-hours versus out-of-hours
+# in hours = 8am to 4pm Monday to Friday (based on MERT study at RBHW)
 weekend_time = function(indata){
   long_data = NULL
   # loop through each patient
@@ -437,7 +454,7 @@ weekend_time = function(indata){
     in_minutes = data.frame(datetime = seq(this$datetime_1, this$datetime_2, 60)) %>%# progress in minutes
       mutate(day = as.numeric(format(datetime, '%u')), # 1 = Monday
              hour = as.numeric(format(datetime, '%H')),
-             in_hours = day<=5 & hour>=9 & hour<=16) %>% # in hours 9:00am to 4:59pm or not weekend
+             in_hours = day<=5 & hour>=8 & hour<=15) %>% # in hours 8:00am to 3:59pm or not weekend
       select(-day, -hour) # no longer needed
     
     # now find time changes
@@ -484,6 +501,7 @@ calendar_time = function(indata){
 risk_diff = function(
   indata = NULL,
   inmodel = NULL,
+  dp = 2, # decimal places
   B = 100, # number of boostrap statistics
   pred_time = 0 # time to predict difference at
 ){
@@ -494,8 +512,12 @@ risk_diff = function(
   largest = names(tab[1])
   # adjust formula
   char_formula = as.character(inmodel$call)
+  old = 'I\\(int_time == \"Intervention\"\\)'
+  char_formula = str_replace(char_formula, pattern=old, replacement = 'int_time_n')
   new_formula = str_replace(string=char_formula[2], pattern='strata', replacement='strat')
   #paste(c(char_formula[2], '~', str_replace(string=char_formula[3], pattern='strata', replacement='strat')), collapse=' ') # rms uses strat no strata
+  # fit cumulative model
+  #crr_model =   
   # refit Cox model using rms package
   cox_rms = cph(as.formula(new_formula), data = indata, surv=TRUE, x=TRUE, y=TRUE)
   # set up predictions, age at median, female, largest team
@@ -511,19 +533,18 @@ risk_diff = function(
   ci = boot.ci(boots, conf=0.95, type= 'norm') 
   ci = as.numeric(ci$normal[2:3]) # just extract CIs
   #
-  dp = 2 # decimal places
   preds = as.data.frame(pred_sur) %>%
     mutate(
-      Survival = round(surv, dp),
-      lower = round(lower, dp),
-      upper = round(upper, dp),
+      Event = roundz(1 - surv, dp), # 1 minus to give those experiencing event
+      lower = roundz(1 - lower, dp),
+      upper = roundz(1 - upper, dp),
       CI = paste(lower, ' to ', upper, sep=''),
       Phase = c('Usual care','Intervention')) %>%
-    select(Phase, Survival, CI)
+    select(Phase, Event, CI)
   # difference
   frame = data.frame(Phase = 'Difference', 
-                     Survival = round(diff(pred_sur$surv), dp),
-                     CI = paste(round(ci[1],dp), ' to ', round(ci[2],dp), sep=''))
+                     Event = roundz(diff(pred_sur$surv), dp),
+                     CI = paste(roundz(ci[1],dp), ' to ', roundz(ci[2],dp), sep=''))
   to_table = bind_rows(preds, frame)
   return(to_table)
 }
@@ -545,4 +566,134 @@ rdnnt <- function(data,
   return(RD);
 }
 
+## function to calculate adjusted restricted mean survival difference
+rmst_diff = function(
+  indata = NULL,
+  pred_time = 0 # time to predict difference at
+){
+  
+  # prepare data for rmst function
+for_rmst = mutate(indata,
+                  status = as.numeric(event=='Yes'),
+                  arm = int_time_n - 1) # 0 = usual care, 1 = intervention
+# set up covariate matrix
+x = data.frame(for_rmst[, c('age','pt_sex')]) %>%
+  mutate(
+    age = age / 5, # standardise
+    pt_sex = as.numeric(pt_sex == 'Female')) # function does not like factors
+# run function
+res = rmst2(
+  time = for_rmst$time,
+  status = for_rmst$status, 
+  arm = for_rmst$arm,
+  tau = pred_time,
+  covariates = x
+)
+# tidy up estimates
+ests = data.frame(res$RMST.difference.adjusted) %>%
+  clean_names()
+ests$var = row.names(ests); row.names(ests) = NULL
+ests = filter(ests, var != 'intercept') %>%
+  select(-se_coef, -z)
 
+return(ests)
+
+} # end of function
+
+
+### function for cristal/spict interaction
+
+score_interaction = function(indata){
+  ## a) Standard Cox model stratified on team within hospital
+  review_sensitivity = coxph(Surv(time = time, event = event== 'Yes') ~ I(age/5) + pt_sex + int_time_n +  cristal_score + spict_score + cristal_score:int_time_n + spict_score:int_time_n + strata(team), data = indata)
+# nice table
+ests = tidy(review_sensitivity, conf.int = TRUE) %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    CI = paste(conf.low, ' to ' , conf.high, sep='')) %>%
+  select(Variable, HR, CI)
+
+## b) had to refit in rms instead of coxph for predict function
+# prepare data
+for_model_cph = mutate(indata, 
+            age5 = (age - 75)/5, # centre and scale
+            spict_score = spict_score - 3, # subtract median
+            cristal_score = cristal_score - 5) # 
+
+# refit model
+cox_model_sensitivity_cph = cph(Surv(time = time, event = event== 'Yes') ~ age5 + pt_sex + int_time_n +  cristal_score + spict_score + cristal_score:int_time_n + spict_score:int_time_n + strat(team), data = for_model_cph)
+# get predictions
+preds1 = Predict(cox_model_sensitivity_cph, 
+                 age5 = 0, # 75
+                 pt_sex = 'Female',
+                 int_time_n = c(1,2),
+                 cristal_score = c(0,1), # one unit increase from median
+                 spict_score = 0, # median
+                 fun = exp) # for HR
+preds2 = Predict(cox_model_sensitivity_cph, 
+                 age5 = 0, # 75
+                 pt_sex = 'Female',
+                 int_time_n = c(1,2),
+                 cristal_score = 0, # median
+                 spict_score = c(0,1), # one unit increase from median
+                 fun = exp) # for HR
+# prepare for plot with separate panels for scores
+preds1 = data.frame(preds1) %>%
+  rename('score' = 'cristal_score') %>%
+  select(-spict_score)
+preds2 = data.frame(preds2) %>%
+  rename('score' = 'spict_score') %>%
+  select(-cristal_score)
+for_plot = bind_rows(preds1, preds2, .id='facet') %>%
+  select(-age5, -pt_sex, -team) %>%
+  mutate(yhat = as.numeric(yhat),
+         int_time_n = ifelse(score == 0, int_time_n - 0.05, int_time_n + 0.05), # jitter
+         facet = ifelse(facet==1, 'CriSTAL', 'SPICT')) 
+# plot
+palette = RColorBrewer::brewer.pal(n=2, name='Dark2')
+gplot = ggplot(data=for_plot, aes(x=int_time_n, y=yhat, ymin=lower, ymax=upper, col=factor(score))) +
+  geom_hline(lty=2, yintercept=1, col='grey66')+
+  geom_point(size=4) +
+  geom_errorbar(width=0, size=1.05)+
+  geom_line(size=1.05) +
+  scale_color_manual('SPICT or CriSTAL score', values=palette, labels=c('Median', 'Median + 1')) +
+  scale_x_continuous(breaks=c(1,2), labels=c('Usual\ncare','Intervention'))+
+  ylab('Hazard ratio') +
+  xlab('')+
+  g.theme +
+  theme(legend.position = 'top',
+        panel.spacing = unit(2, "lines"))+ # increase gap between panels
+  facet_wrap(~facet)
+
+# return tables and plots
+to_return = list()
+to_return$ests = ests
+to_return$plot = gplot
+to_return$model = cox_model_sensitivity_cph # for VIF
+return(to_return)
+
+}
+
+## function to scramble baseline hazard
+scramble_hazard = function(indata){
+  d = diff(indata$hazard) # differences between hazards
+  d = d[d>=0] # only positive changes
+  cum = 0 
+  for(k in 2:nrow(indata)){
+    if(indata$hospital[k-1] != indata$hospital[k]){cum=0; next}
+    cum = cum + sample(d, size=1)
+    indata$hazard[k] = cum
+  }
+  return(indata)
+} # end of function
+
+# function to make zero cells in tables
+zeros = function(x){
+  y = ifelse(x=='', '0 (0)', x)
+  y = ifelse(is.na(x)==TRUE, '0 (0)', x)
+  return(y)
+}
