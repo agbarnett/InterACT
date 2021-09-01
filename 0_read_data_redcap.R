@@ -457,21 +457,21 @@ survival_data2 = bind_rows(survival_data2, v2)
 # small data set of just at-risk
 small = select(baseline, participant_id, at_risk)
 # tidy up survival data
-# a) version 1
+# a) version 1 with no competing risk of discharge
 survival_data1 = left_join(survival_data1, int_time_data, by='participant_id') %>% # add intervention time (categorical variable to survival data)
   left_join(small, by='participant_id') %>%
   filter(at_risk == 'At risk') %>% # only those at risk
   select(-at_risk) %>% # no longer needed
   mutate(hospital = str_sub(participant_id, 1, 4)) 
-# b) version 2
+# b) version 2 with competing risk of discharge
 survival_data2 = left_join(survival_data2, int_time_data, by='participant_id') %>% # add intervention time (categorical variable to survival data)
   left_join(small, by='participant_id') %>%
   filter(at_risk == 'At risk') %>% # only those at risk
   select(-at_risk) %>% # no longer needed
   mutate(hospital = str_sub(participant_id, 1, 4)) 
 # August 2021, combined version that uses version 2 for RBWH/GCUH and version 1 for TPCH
-survival_data1 = filter(survival_data1, hospital!='TPCH')
-survival_data2 = filter(survival_data2, hospital=='TPCH')
+survival_data1 = filter(survival_data1, hospital == 'TPCH')
+survival_data2 = filter(survival_data2, hospital != 'TPCH')
 survival_data = bind_rows(survival_data1, survival_data2)
 
 ### any 4,5,6 forms completed to baseline

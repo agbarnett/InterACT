@@ -5,6 +5,7 @@
 
 make_survival_times = function(
   indata = baseline,
+  max_censor = 60, # maximum plausible time, censor after this
   date_changes_time = date_changes_time,
   form = clinicianled_review ,
   change_var = 'care_review',
@@ -185,6 +186,25 @@ make_survival_times = function(
   cat('From original data:\n')
   no_form = filter(form, participant_id %in% no$participant_id) %>% arrange(participant_id)
   print(no_form)
+  
+  # censor very odd times
+  index = to_export$time > max_censor
+  if(any(index)){
+    cat('Truncated ', sum(index, na.rm=TRUE), ' observations as time was beyond ', max_censor, ' days.', sep='')
+    to_export = mutate(to_export,
+                     flag = time >= max_censor,
+                     flag = ifelse(is.na(flag), FALSE, flag),
+                     time = ifelse(flag == TRUE, max_censor, time),
+                     event = ifelse(flag == TRUE, 'Censored', event)) %>%
+      select(-flag)
+    to_export2 = mutate(to_export2,
+                       flag = time >= max_censor,
+                       flag = ifelse(is.na(flag), FALSE, flag),
+                       time = ifelse(flag == TRUE, max_censor, time),
+                       event = ifelse(flag == TRUE, 'Censored', event)) %>%
+      select(-flag)
+    
+  }
   
   # return
   to_return = list()

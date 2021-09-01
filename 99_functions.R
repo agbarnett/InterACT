@@ -484,18 +484,37 @@ weekend_time = function(indata){
 
 
 ### make survival data using calendar time
-calendar_time = function(indata){
-  # start of usual care
+calendar_time = function(indata, changes){
+  # start of usual care (start time in all three hospitals)
   ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz='Australia/Brisbane')
   ref_datetime = as.numeric(ref_datetime)
-  # calculate difference from usual care date/time
-  outdata = mutate(indata, 
+  
+  # remove establishment phase (added August 2021) - need to adjust back before plotting
+  changes = select(changes, hospital, date_intervention) # slim down
+  outdata = left_join(indata, changes, by='hospital') %>%
+    mutate(index = ifelse(as.Date(datetime_1) >= date_intervention, 1, 0),
+           datetime_1 = ifelse(index==1, datetime_1 - (28 * 60*60*24), datetime_1 ), # knock off four weeks (establishment) to avoid gap; original data on date/time scale
+           datetime_2 = ifelse(index==1, datetime_2 - (28 * 60*60*24), datetime_2 ))
+  
+  # calculate difference from usual care date/time (after adjusting for establishment)
+  outdata = mutate(outdata, 
                    start = (as.numeric(datetime_1) - ref_datetime)/(60*60*24),
                    end = (as.numeric(datetime_2) - ref_datetime)/(60*60*24))
+    
   #
   return(outdata)
 }
 
+# function to get establishment dates as days in calendar time
+e_dates = function(changes){
+  ref_date = data.frame(start = as.Date(ISOdate(year=2020, month=5, day=25)))
+  changes = select(changes, hospital, date_intervention) %>% # slim down
+    merge(ref_date, by=NULL) %>% # merge to all rows
+    mutate(cut = as.numeric(date_intervention - start)) %>%
+    select(hospital, cut)
+  return(changes)
+}
+  
 
 ## function to calculate risk difference for survival models, with bootstrap CIs
 risk_diff = function(

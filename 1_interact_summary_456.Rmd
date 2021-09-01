@@ -246,11 +246,14 @@ The screening not complete column comes from the "Screening completion" form in 
 
 The results in this section only use the first clinician-led review discussion per patient. For patients without a care review discussion, we used their final completed follow-up form.
 
+Results can be censored in the GCUH and RBWH hospitals as we are able to track patients up until their discharge. For TPCH, we can only assess patient status at the time the follow-up was complete, hence these patients are "No" at a specific time rather than "censored". "Censored" can be read as "No at the time they were discharged."
+
 ### Has a clinician-led care review discussion occurred?
 
 ```{r}
 # results split by hospital - change after unscrambling
 stats = filter(survival_data, outcome== 'care_review') %>%
+  mutate(event = ifelse(event %in% c('Discharge','Intervention','Post-intervention'), "Censored", event)) %>% # Added
   group_by(int_time, hospital, event) %>%
   tally()
 stats2 = group_by(stats, hospital, int_time) %>%
@@ -264,7 +267,7 @@ totals = group_by(stats, hospital, int_time) %>%
             Total = paste(Total, ' (100)', sep=''))
 #
 to_table = left_join(stats2, totals, by=c('hospital','int_time')) %>%
-  select(hospital, int_time, Prior, No, Yes, Total) %>% # order rows
+  select(hospital, int_time, Prior, Censored, No, Yes, Total) %>% # order rows
   arrange(hospital, int_time) %>%
   rename('Intervention time' = 'int_time') %>%
   mutate_all(zeros)
@@ -520,6 +523,7 @@ The results in this section only use the first care directive per patient. For p
 ```{r}
 # results split by hospital - change after unscrambling
 stats = filter(survival_data, outcome== 'care_directive') %>%
+  mutate(event = ifelse(event %in% c('Discharge','Intervention','Post-intervention'), "Censored", event)) %>% # Added 31 Aug
   group_by(int_time, hospital, event) %>%
   tally()
 stats2 = group_by(stats, hospital, int_time) %>%
@@ -533,7 +537,7 @@ totals = group_by(stats, hospital, int_time) %>%
             Total = paste(Total, ' (100)', sep=''))
 #
 to_table = left_join(stats2, totals, by=c('hospital','int_time')) %>%
-  select(hospital, int_time, Prior, No, Yes, Total) %>% # order rows
+  select(hospital, int_time, Prior, Censored, No, Yes, Total) %>% # order rows 
   arrange(hospital, int_time) %>%
   rename('Intervention time' = 'int_time') %>%
   mutate_all(zeros)
@@ -935,6 +939,7 @@ The results in this section only use the first palliative care referral per pati
 ```{r}
 # results split by hospital - change after unscrambling
 stats = filter(survival_data, outcome== 'palliative_care_referral') %>%
+  mutate(event = ifelse(event %in% c('Discharge','Intervention','Post-intervention'), "Censored", event)) %>% # Added August
   group_by(int_time, hospital, event) %>%
   tally()
 stats2 = group_by(stats, hospital, int_time) %>%
@@ -948,7 +953,7 @@ totals = group_by(stats, hospital, int_time) %>%
             Total = paste(Total, ' (100)', sep=''))
 #
 to_table = left_join(stats2, totals, by=c('hospital','int_time')) %>%
-  select(hospital, int_time, Prior, No, Yes, Total) %>% # order rows
+  select(hospital, int_time, Prior, Censored, No, Yes, Total) %>% # order rows
   arrange(hospital, int_time) %>%
   rename('Intervention time' = 'int_time') %>%
   mutate_all(zeros)
@@ -1183,6 +1188,8 @@ Here we use patients' calendar time in the time-to-event analysis in place of pa
 
 An initial model using the scrambled data found that stratifying by team within hospital meant some baseline hazards were relatively erratic due to the small number of events in some teams. Hence we instead stratified only on hospital for this analysis. The estimates of baseline hazard therefore show the average results over time across the hospital. Team was added as a variable in the model to control for long-term differences between teams in the rates of outcomes 4, 5 and 6. 
 
+The analysis and plots below exclude the establishment phase.
+
 ```{r make_times, include=FALSE}
 ### make the intervention times on a calendar time
 # starting date/time (usual care)
@@ -1200,7 +1207,7 @@ lines = select(date_changes, hospital, date_intervention) %>%
 
 ```{r}
 # put data on alternative time scale 
-calendar_time_care_review = calendar_time(for_model_care_review) # see 99_functions.R
+calendar_time_care_review = calendar_time(indata=for_model_care_review, changes=date_changes) # see 99_functions.R
 
 # run Cox model
 cox_model_care_review_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex + factor(team) + strata(hospital), data = calendar_time_care_review)
@@ -1239,9 +1246,9 @@ startend = group_by(base, hospital) %>%
   filter(row_number()==1 | row_number()==n())
 # plot
 bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
   geom_line() +
   geom_line(data=startend, aes(x=time, y=hazard), lty=3) +
-  geom_vline(data=lines, aes(xintercept=time), lty=2) +
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Calendar time, days since 25-May-2020') +
   ylab('Cumulative hazard') +
@@ -1251,15 +1258,13 @@ bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
 bplot
 ```
 
-
-
-The dotted vertical line is the time the intervention was started in each hospital. 
+The vertical dotted line shows the change-over to the establishment phase. The four weeks of establishment phase have been removed to avoid a break in the plot.
 
 ### b) Time to care directives documents
 
 ```{r}
 # put data on alternative time scale 
-calendar_time_care_directive = calendar_time(for_model_care_directive) # see 99_functions.R
+calendar_time_care_directive = calendar_time(for_model_care_directive, changes=date_changes) # see 99_functions.R
 
 # run Cox model
 cox_model_care_directive_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex + factor(team) + strata(hospital), data = calendar_time_care_directive)
@@ -1298,9 +1303,9 @@ startend = group_by(base, hospital) %>%
   filter(row_number()==1 | row_number()==n())
 # plot
 bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
   geom_line() +
   geom_line(data=startend, aes(x=time, y=hazard), lty=3) +
-  geom_vline(data=lines, aes(xintercept=time), lty=2) +
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Calendar time, days since 25-May-2020') +
   ylab('Cumulative hazard') +
@@ -1310,12 +1315,14 @@ bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
 bplot
 ```
 
+The vertical dotted line shows the change-over to the establishment phase. The four weeks of establishment phase have been removed to avoid a break in the plot.
+
 
 ### c) Time to palliative care
 
 ```{r}
 # put data on alternative time scale 
-calendar_time_palliative = calendar_time(for_model_palliative) # see 99_functions.R
+calendar_time_palliative = calendar_time(for_model_palliative, changes=date_changes) # see 99_functions.R
 
 # run Cox model
 cox_model_palliative_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex + factor(team) + strata(hospital), data = calendar_time_palliative)
@@ -1343,7 +1350,7 @@ There were `r n_missing` patients excluded from the time-to-event analysis due t
 #### Plot baseline cumulative hazard
 
 ```{r, fig.width=8}
-# calculate cumulative hazard
+#
 base = basehaz(cox_model_palliative_calendar, centered=TRUE) %>%
   rename('hospital' = 'strata')
 # extra step needed to scramble baseline hazard
@@ -1354,9 +1361,9 @@ startend = group_by(base, hospital) %>%
   filter(row_number()==1 | row_number()==n())
 # plot
 bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
   geom_line() +
-  geom_line(data=startend, aes(x=time, y=hazard), lty=3) + # diagonal line
-  geom_vline(data=lines, aes(xintercept=time), lty=2) +
+  geom_line(data=startend, aes(x=time, y=hazard), lty=3) +
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Calendar time, days since 25-May-2020') +
   ylab('Cumulative hazard') +
@@ -1365,6 +1372,9 @@ bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
   theme(legend.position='none')
 bplot
 ```
+
+The vertical dotted line shows the change-over to the establishment phase. The four weeks of establishment phase have been removed to avoid a break in the plot.
+
 
 
 ## Sensitivity analyses #2: weekend and after-hours effects
