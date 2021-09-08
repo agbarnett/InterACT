@@ -1,6 +1,6 @@
 # read the data from redcap using the export function from REDCap
 # Use all three versions of REDCAP databases
-# August 2021
+# September 2021
 library(readxl)
 library(tidyr)
 library(dplyr)
@@ -380,7 +380,7 @@ care_directive = filter(all_data, redcap_repeat_instrument == 'care_directive_me
          "type_care_directive_1_factor", "type_care_directive_2_factor",
          "type_care_directive_3_factor", "type_care_directive_4_factor", "type_care_directive_5_factor",
          "type_care_directive_6_factor", "type_care_directive_7_factor", "type_care_directive_8_factor",
-         'care_directive_other','tracker_factor') %>%
+         'care_directive_other','tracker_factor', 'existing_arp_factor') %>%
   mutate(care_directive_other = ifelse(care_directive_other=='', NA, care_directive_other)) %>% # make empty missing
   rename_at(vars(ends_with("_factor")),funs(str_replace(.,"_factor",""))) %>% # remove _factor from variable names
   filter(!is.na(change_5))  # remove records that are essentially missing
@@ -456,7 +456,8 @@ survival_data2 = bind_rows(survival_data2, v2)
 
 # small data set of just at-risk
 small = select(baseline, participant_id, at_risk)
-# tidy up survival data
+
+## tidy up survival data ##
 # a) version 1 with no competing risk of discharge
 survival_data1 = left_join(survival_data1, int_time_data, by='participant_id') %>% # add intervention time (categorical variable to survival data)
   left_join(small, by='participant_id') %>%
@@ -469,9 +470,25 @@ survival_data2 = left_join(survival_data2, int_time_data, by='participant_id') %
   filter(at_risk == 'At risk') %>% # only those at risk
   select(-at_risk) %>% # no longer needed
   mutate(hospital = str_sub(participant_id, 1, 4)) 
-# August 2021, combined version that uses version 2 for RBWH/GCUH and version 1 for TPCH
-survival_data1 = filter(survival_data1, hospital == 'TPCH')
-survival_data2 = filter(survival_data2, hospital != 'TPCH')
+# Sep 2021, combined version that uses version 2 for RBWH/GCUH and version 1 for some TPCH
+#
+tpch_version2 = read_excel('data/InterACTTPCHV3-AtRiskWithNoFollowUps_all.xlsx') # REDCap IDs where outcome 4, 5 and 6 were completed retrospectively
+names(tpch_version2) = 'participant_id'
+tpch_version2 = mutate(tpch_version2, participant_id = paste('TPCH_V3_', participant_id, sep=''))
+# IDs for version 2
+all_ids = data.frame(participant_id = unique(baseline$participant_id))
+all_ids = mutate(all_ids,
+                 version = case_when(
+                   str_sub(participant_id,1,4) == 'RBWH' ~ 2, # if RBWH ...
+                   str_sub(participant_id,1,4) == 'GCUH' ~ 2, # ... or if GCUH ...
+                   participant_id %in% tpch_version2$participant_id ~ 2, # ... or if selected from TPCH
+                   TRUE ~ 1 # otherwise # (some in TPCH)
+                 ))
+# table(all_ids$version, str_sub(all_ids$participant_id,1,4)) # check
+id_v1 = filter(all_ids, version==1) %>% pull(participant_id)
+id_v2 = filter(all_ids, version==2) %>% pull(participant_id)
+survival_data1 = filter(survival_data1, participant_id %in% id_v1)
+survival_data2 = filter(survival_data2, participant_id %in% id_v2)
 survival_data = bind_rows(survival_data1, survival_data2)
 
 ### any 4,5,6 forms completed to baseline

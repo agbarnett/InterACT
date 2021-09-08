@@ -362,15 +362,17 @@ circular_plots = function(indata, var, datetime){
   standard_dow = left_join(to_plot, date_changes, by='hospital') %>%
     group_by(hospital, dow, int_time, days_uc, days_int) %>%
     tally() %>%
-    mutate(stan = ifelse(int_time=='Usual care', n/(days_uc/7), n/(days_int/7))) %>% 
-    ungroup () 
+    mutate(stan = ifelse(int_time=='Usual care', n/(days_uc/7), n/(days_int/7)),
+           hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) %>% 
+    ungroup() 
   standard_hour = left_join(to_plot, date_changes, by='hospital') %>%
     group_by(hospital, hour, int_time, days_uc, days_int) %>%
     tally() %>%
-    mutate(stan = ifelse(int_time=='Usual care', n/(days_uc/7), n/(days_int/7))) %>% 
-    ungroup () 
+    mutate(stan = ifelse(int_time=='Usual care', n/(days_uc/7), n/(days_int/7)),
+           hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) %>% 
+    ungroup() 
   # day of the week
-  week_plot = ggplot(data=standard_dow, aes(x=dow, y=stan, fill=hospital))+
+  week_plot = ggplot(data=standard_dow, aes(x=dow, y=stan, fill=hosp_ordered))+ # order by intervention time
     ggtitle('Day of week')+
     geom_histogram(stat='identity')+
     scale_fill_manual('Hospital', values=cbPalette)+
@@ -381,7 +383,7 @@ circular_plots = function(indata, var, datetime){
     theme(legend.position = 'top') + 
     facet_wrap(~int_time)
   # hour of the day
-  hour_plot = ggplot(data=standard_hour, aes(x=hour, y=stan, fill=hospital))+
+  hour_plot = ggplot(data=standard_hour, aes(x=hour, y=stan, fill=hosp_ordered))+
     ggtitle('Hour of day')+
     geom_histogram(stat='identity')+
     scale_fill_manual('Hospital', values=cbPalette)+
@@ -425,6 +427,7 @@ nice_rename = function(invar){
   invar = case_when(
     str_detect(invar, pattern='age.5') == TRUE ~ "Age (+5 years)",
     str_detect(invar, pattern='^age') == TRUE ~ "Age (+5 years)",
+    str_detect(invar, pattern='^pt_sex=Female') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='^pt_sex$') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='pt_sexFemale') == TRUE ~ "Sex (Female)",
     str_detect(invar, pattern='pt_sexUnknown') == TRUE ~ "Sex (Unknown)",
@@ -519,7 +522,7 @@ e_dates = function(changes){
 ## function to calculate risk difference for survival models, with bootstrap CIs
 risk_diff = function(
   indata = NULL,
-  inmodel = NULL,
+  inmodel = NULL, # survival model, used to get formula
   dp = 2, # decimal places
   B = 100, # number of boostrap statistics
   pred_time = 0 # time to predict difference at
@@ -540,7 +543,7 @@ risk_diff = function(
   # refit Cox model using rms package
   cox_rms = cph(as.formula(new_formula), data = indata, surv=TRUE, x=TRUE, y=TRUE)
   # set up predictions, age at median, female, largest team
-  pred_data = data.frame(int_time_n = c(0,1), pt_sex = 'Female', age=84, team=largest)
+  pred_data = data.frame(int_time_n = c(0,1), pt_sex = 'Female', age=84, spict_score=3, cristal_score=5, team=largest)
   pred_sur = survest(cox_rms, newdata=pred_data, times=pred_time)
   # bootstrap intervals
   boots <- boot(data = indata,
@@ -562,7 +565,7 @@ risk_diff = function(
     select(Phase, Event, CI)
   # difference
   frame = data.frame(Phase = 'Difference', 
-                     Event = roundz(diff(pred_sur$surv), dp),
+                     Event = roundz(diff(pred_sur$surv)*(-1), dp), # -1 to give intervention minus usual care
                      CI = paste(roundz(ci[1],dp), ' to ', roundz(ci[2],dp), sep=''))
   to_table = bind_rows(preds, frame)
   return(to_table)
@@ -580,7 +583,7 @@ rdnnt <- function(data,
   cfit <- cph(formula = frm, data=dd,
               surv=TRUE, x=TRUE, y=TRUE);
   pred_sur = survest(cfit, newdata=pred_data, times=pred_time)
-  RD <- diff(pred_sur$surv) # risk difference
+  RD <- diff(pred_sur$surv)*(-1) # risk difference (intervention minus usual care)
   #cat('.'); # updater
   return(RD);
 }
@@ -715,4 +718,27 @@ zeros = function(x){
   y = ifelse(x=='', '0 (0)', x)
   y = ifelse(is.na(x)==TRUE, '0 (0)', x)
   return(y)
+}
+
+### function to create a plot of the difference in the baseline hazard over calendar time for plotting
+base_haz_difference = function(inbase){
+  # interpolate diagonal reference line - add after scrambling
+  startend = group_by(inbase, hospital) %>%
+    arrange(time) %>%
+    mutate(row = row_number()) %>%
+    filter(row==1 | row==n()) %>% # first and last
+    mutate(hstart = lag(hazard),
+           tstart = lag(time),
+           tdiff = time - lag(time), 
+           diff = hazard - lag(hazard),
+           delta = diff/tdiff) %>% 
+    filter(!is.na(tdiff)) %>%
+    select(hospital, hstart, tstart, delta) 
+  #
+  diff = full_join(inbase, startend, by=c('hospital')) %>%
+    group_by(hospital) %>%
+    mutate(diagonal = hstart + (time-tstart)*delta,
+           diff = hazard - diagonal,
+           hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+  return(diff)
 }

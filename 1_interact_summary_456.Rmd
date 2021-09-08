@@ -12,7 +12,7 @@ bibliography: references.bib
 
 ```{r setup, include=FALSE}
 # using formatting in Word document (see above)
-knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400, dev = "ragg_png")
 options(width=1000) # Wide pages
 options(scipen=999) # avoid scientific presentation
 source('99_functions.R')
@@ -27,6 +27,7 @@ library(stringr)
 library(flextable)
 
 # graphics things:
+library(ragg) # because of ribbon issue
 library(ggplot2)
 library(ggupset)  # to plot combination of reviews
 library(survminer) # for survival plots
@@ -39,7 +40,7 @@ source('1_not_scramble_data.R')
 
 # prediction time used to truncate survival plots and for prediction of risk difference:
 pred_time = 21 # 3 weeks
-n_boot = 5000 # number of bootstrap samples for risk difference, increase to 5000 for final run
+n_boot = 3000 # number of bootstrap samples for risk difference, increase to 3000 for final run
 
 # scramble intervention (turn off -- FALSE -- when ready)
 scramble = FALSE # 
@@ -48,7 +49,7 @@ if(scramble == TRUE){
 }
 
 # create small subset of variables to add to outcome data
-data_to_add = select(baseline, participant_id, pt_sex, age, team)
+data_to_add = select(baseline, participant_id, pt_sex, age, cristal_score, spict_score, team)
 ```
 
 This report covers outcomes 4, 5 and 6. Other outcomes will be examined later as more data becomes available. 
@@ -94,15 +95,15 @@ We included patients from the establishment phase in the descriptive tables, but
 
 #### Time-to-event analyses
 
-The time-to-event analyses used the time to the first "Yes" outcome (e.g., time to first clinical-led care review). For patients with only "No" outcomes, the time was censored at the date/time of their last "No" outcome. We did not use discharge date to censor patients in TPCH as we could only be sure about events between the follow-up audits. Discharge date was used to censor patients in the other two hospitals. 
+The time-to-event analyses used the time to the first "Yes" outcome (e.g., time to first clinical-led care review). For patients with only "No" outcomes, the time was censored at the date/time of their last "No" outcome. Discharge date was used to censor all patients in the GCUH and RBWH hospitals. For TPCH, we could only used discharge as a censoring time in a subset of 512 patients who were retrospectively audited. For other TPCH patients we ended their survival time at their last completed audit.
 
-We used Cox models that were stratified on team (within hospital), which meant that each team had its own baseline hazard, which allowed for differences in the ways teams typically manage patients. We could then estimate the change in hazards (times-to-event) due to the intervention. The variables in the model were the potential confounders of age and sex, and the intervention phase which used a reference category of "usual care". Age was scaled to a 5-year increase to make the estimates more clinically meaningful. Teams were adjusted for using the baseline hazard.
+We used Cox models that were stratified on team (within hospital), which meant that each team had its own baseline hazard, which allowed for differences in the ways teams typically manage patients. We could then estimate the change in hazards (times-to-event) due to the intervention. The variables in the model were the potential confounders of age, sex, CRiSTAL and SPICT score, and the intervention phase which used a reference category of "usual care". Age was scaled to a 5-year increase to make the estimates more clinically meaningful. Teams were adjusted for using the baseline hazard.
 
 We checked the proportional hazards assumption for the Cox models using a graphical check rather than a formal statistical test as the statistical test may have limited utility [@Stensrud2020]. The graphical test helps locate the time of any non-proportional effects. 
 
 #### Missing outcome times
 
-Some outcomes are missing the exact time the outcome took place. They should have the date, but not the time. This is because this was often not recorded in the notes. These results are not included in the plots that examine the hour of day. In the time-to-event analyses, these results were assumed to occur at midnight. 
+Some outcomes are missing the exact time the outcome took place. They should have the date, but not the time. This is because this was often not recorded in the notes. These results are not included in the plots that examine the hour of day. In the time-to-event analyses, these results were assumed to occur 1 minute before midnight on the same day. 
 
 
 ###### page break
@@ -114,17 +115,17 @@ Some outcomes are missing the exact time the outcome took place. They should hav
 ```{r}
 load('data/date_changes.RData')
 date_changes = mutate(date_changes, 
-                        days_uc = 1 + as.numeric(date_establishment) - as.numeric(date_usual_care),
-                        days_int = 1 + as.numeric(date_post) - as.numeric(date_intervention  )) %>%
+      days_uc = 1 + as.numeric(date_establishment) - as.numeric(date_usual_care),
+      days_int = 1 + as.numeric(date_post) - as.numeric(date_intervention  )) %>%
     select(-date_end) %>%
   mutate_if(lubridate::is.Date, my.date.format) %>%
+  arrange(days_uc) %>% # arrange results by date of change
   rename('Usual care' = 'date_usual_care',
          'Establishment' = 'date_establishment',
          'Intervention' = 'date_intervention',
          'End of intervention' = 'date_post',
          'Days in usual care' = 'days_uc',
-         'Days in intervention' = 'days_int'
-         )
+         'Days in intervention' = 'days_int')
 ftab = flextable(date_changes) %>%
   theme_box() %>%
   fontsize(size=9, part='all') %>%
@@ -137,11 +138,11 @@ The table above shows the key times in each of the three hospitals and the numbe
 
 ## Patient age
 
-The plot is split by CriSTAL/SPICT positive.
+The plot is split by patients who were either CriSTAL or SPICT positive.
 
 ```{r, out.width='100%', fig.width=7}
 to_plot = filter(baseline, redcap_version == 3, !is.na(at_risk))
-p <- ggplot(to_plot, aes(x=factor(hospital), y=age, fill=factor(hospital))) + 
+p <- ggplot(to_plot, aes(x=hosp_ordered, y=age, fill=factor(hospital))) + 
   scale_fill_manual('Hospital', values=cbPalette) +
   geom_violin(alpha=0.5) +
   geom_boxplot(width=0.1) +
@@ -154,6 +155,9 @@ p
 
 ## Patient gender 
 
+The table is split by patients who were either CriSTAL or SPICT positive.
+
+
 ```{r}
 table = group_by(to_plot, hospital, at_risk, pt_sex) %>%
   tally() %>%
@@ -162,7 +166,8 @@ table = group_by(to_plot, hospital, at_risk, pt_sex) %>%
          cell = paste(n, ' (', p, ')', sep='')) %>%
   select(-n, -p) %>%
   pivot_wider(values_from=cell, names_from='at_risk') %>%
-  rename('Gender' = 'pt_sex')
+  rename('Gender' = 'pt_sex') %>%
+  arrange(desc(hospital, Gender)) # in order of intervention
 ftab = flextable(table) %>%
   theme_box() %>%
   autofit()
@@ -176,12 +181,15 @@ table = filter(baseline,
                redcap_version == 3,
                at_risk=="At risk") %>%
   tabyl(hospital, int_time) %>%
+  arrange(desc(hospital, Gender)) %>% # in order of intervention
   adorn_totals("row") 
 ftab = flextable(table) %>%
   theme_box() %>%
   autofit()
 ftab
 ```
+
+These numbers reflect the timing of the intervention in each hospital. 
 
 ## At-risk numbers with outcomes 4, 5 or 6 not recorded
 
@@ -226,7 +234,8 @@ table = group_by(for_table, int_time, hospital, number, name) %>%
          cell = paste(N-n, '/', N, ' (', percent, ')', sep='')) %>%
   select(-n, -N, -percent) %>%
   pivot_wider(names_from = int_time, values_from=cell) %>%
-  select('hospital','number','name','Usual care','Establishment','Intervention','Screening not complete') %>% # ordering
+  select('hospital','number','name','Usual care','Establishment','Intervention','Screening not complete') %>% # column ordering
+  arrange(desc(hospital), number) %>% # in order of intervention
   mutate(name = str_replace_all(name, '_', ' ')) %>%
   mutate_all(zeros) %>% # replace blanks with zeros
   rename('Outcome number' = 'number',
@@ -238,7 +247,7 @@ ftab = flextable(table) %>%
 ftab
 ```
 
-The table shows the numbers and percentages (in parentheses) where the outcomes 4, 5 and 6 are not completed. So lower percentages indicate a good coverage of the outcomes. The results are split by hospital and only apply to at-risk patients. 
+The table shows the numbers and percentages (in parentheses) where the outcomes 4, 5 and 6 are not completed. So lower percentages indicate a good coverage of the outcomes. The results are split by hospital and only apply to at-risk patients (either CRiSTAL or SPICT positive). 
 
 The screening not complete column comes from the "Screening completion" form in REDCap.
 
@@ -251,7 +260,7 @@ Results can be censored in the GCUH and RBWH hospitals as we are able to track p
 ### Has a clinician-led care review discussion occurred?
 
 ```{r}
-# results split by hospital - change after unscrambling
+# results split by hospital - changed after unscrambling
 stats = filter(survival_data, outcome== 'care_review') %>%
   mutate(event = ifelse(event %in% c('Discharge','Intervention','Post-intervention'), "Censored", event)) %>% # Added
   group_by(int_time, hospital, event) %>%
@@ -268,7 +277,7 @@ totals = group_by(stats, hospital, int_time) %>%
 #
 to_table = left_join(stats2, totals, by=c('hospital','int_time')) %>%
   select(hospital, int_time, Prior, Censored, No, Yes, Total) %>% # order rows
-  arrange(hospital, int_time) %>%
+  arrange(desc(hospital), int_time) %>% # by order of intervention
   rename('Intervention time' = 'int_time') %>%
   mutate_all(zeros)
 ftab = flextable(to_table) %>%
@@ -278,7 +287,9 @@ ftab = flextable(to_table) %>%
 ftab
 ```
 
-The table shows the number of patients and percentage in parentheses.
+The table shows the number of patients and row percentages in parentheses.
+
+"Prior" means a clinician-led care review discussion had taken place prior to this admission. The other outcomes of "No", "Yes" and "Censored" are during the index admission. 
 
 ### Days and times when clinical-led discussions took place
 
@@ -291,7 +302,7 @@ print(to_plot$week)
 
 The results are standardised to the numbers per week because the hospitals had different times in the usual care and intervention phases.
 
-There were `r to_plot$missing_hour` patients (`r to_plot$missing_hour_percent` %) that were missing the date/time the review took place and are not included in these plots.
+There were `r to_plot$missing_hour` patients (`r to_plot$missing_hour_percent` %) that were missing the exact time the review took place and are not included in these plots.
 
 ```{r, out.width='100%'}
 print(to_plot$hour)
@@ -327,11 +338,9 @@ Here we use time-to-event analysis to examine the time to the first clinical-led
 
 ```{r, include=FALSE}
 ## prepare data for cumulative and instantaneous survival models
-# exclude prior:
 for_model_care_review = filter(survival_data,
                   outcome == 'care_review',
-                  int_time != 'Establishment', # excluded from analysis
-                  event != 'Prior') %>%
+                  int_time != 'Establishment') %>% # excluded from analysis
   mutate(  event = as.character(event), # needed for ifelse below
            event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
 
@@ -343,11 +352,6 @@ for_model_care_review = left_join(for_model_care_review, data_to_add, by='partic
 n_excluded_establishment = nrow(filter(survival_data, 
                                outcome == 'care_review',
                                int_time == 'Establishment'))
-# b) prior
-n_excluded_prior = nrow(filter(survival_data, 
-                               outcome == 'care_review',
-                               int_time != 'Establishment', # avoid double-counting of those excluded for this reason
-                               event == 'Prior'))
 ```
 
 ##### Cumulative probability plot (clinical-led discussion)
@@ -358,7 +362,8 @@ n_excluded_prior = nrow(filter(survival_data,
 plot_data = NULL
 for (hosp in c('RBWH','TPCH','GCUH')){
   this_data = filter(for_model_care_review, hospital ==hosp) %>%
-    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+    mutate(event = ifelse(event=='Prior', 'Yes', event), # prior count as events at early time
+           eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
   cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
   g = ggcompetingrisks(cum_inc,
                        xlab = 'Days',
@@ -375,6 +380,7 @@ for (hosp in c('RBWH','TPCH','GCUH')){
 }
 # add CI
 to_plot = mutate(plot_data,
+                 hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')), # to show in intervention order
                  z = qnorm(0.975),
                  lower  = est - (z*sqrt(var)),
                  upper  = est + (z*sqrt(var)),
@@ -384,13 +390,14 @@ alt_plot = ggplot(to_plot, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)
   geom_ribbon(alpha=0.2) +
   geom_line(size = 1.05) +  # make lines thicker
   scale_y_continuous(limits=c(0,1)) + # 
-  scale_x_continuous(limits=c(0,pred_time)) + # limit based on censoring
+  #scale_x_continuous(limits=c(0,pred_time)) + # limit based on censoring
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
   theme_bw() +
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Days from ward admission') +
   ylab('Cumulative probability') +
   theme(legend.position = c(0.85, 0.15)) +
-  facet_wrap(~hospital)
+  facet_wrap(~hosp_ordered)
 alt_plot
 # for text, number of events post cut-off
 n_after = sum(for_model_care_review$time > pred_time)
@@ -404,7 +411,7 @@ We limited the plot to the first `r pred_time` days because there were only `r p
 
 ```{r}
 # Cox model stratified on team within hospital
-cox_model_care_review = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex + strata(team), data = for_model_care_review)
+cox_model_care_review = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = for_model_care_review)
 # number missing:
 n_missing = nrow(for_model_care_review) - cox_model_care_review$n
 #
@@ -426,7 +433,36 @@ ft
 We used a Cox proportional hazards model stratified on team. The table shows the hazard ratios (HRs) and 95% confidence intervals (CIs).
 Age increased the hazard of the first care directive, meaning it was associated with shorter times to the first care review. 
 
-There were `r n_excluded_establishment` patients excluded as they were in the establishment phase and `r n_excluded_prior` excluded because they already had a valid review prior to this admission. The total number of patients in the time-to-event model was `r format(nrow(for_model_care_review), big.mark=',')`. The number of patients censored was `r sum(for_model_care_review$event== 'Censored')`. There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
+There were `r n_excluded_establishment` patients excluded as they were in the establishment phase. The total number of patients in the time-to-event model was `r format(nrow(for_model_care_review), big.mark=',')`. The number of patients censored was `r sum(for_model_care_review$event== 'Censored')`. There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
+
+##### Results per hospital
+
+The results below are from separate Cox models in each hospital.
+
+```{r}
+all_ests = NULL
+for (hosp in c("GCUH","TPCH",'RBWH')){
+  # Cox model stratified on team within hospital
+  cox_model_care_review_hosp = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = filter(for_model_care_review, hospital==hosp))
+  #
+  ests = tidy(cox_model_care_review_hosp, conf.int = TRUE) %>%
+    mutate(hospital = hosp)
+  all_ests = bind_rows(all_ests, ests)
+}
+  all_ests = filter(all_ests, !is.na(estimate)) %>%
+  mutate(Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
+  select(Variable, hospital, cell) %>%
+  pivot_wider(values_from=cell, names_from=hospital) %>%
+    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+ft = flextable(all_ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
 
 ##### Absolute measure of difference
 
@@ -444,6 +480,31 @@ ftab = flextable(risk_difference) %>%
 ftab
 ```
 
+##### Absolute measure of difference by hospital
+
+```{r}
+all_diffs = NULL
+for (hosp in c("GCUH","TPCH",'RBWH')){
+  risk_difference = risk_diff(
+    indata = filter(for_model_care_review, hospital==hosp),
+    inmodel= cox_model_care_review,
+    B = n_boot,
+    pred_time = pred_time) %>%
+    mutate(hospital = hosp)
+  all_diffs = bind_rows(all_diffs, risk_difference)
+}
+#
+for_table = mutate(all_diffs, cell = paste(Event, ' (', CI, ')', sep='')) %>%
+  select(hospital, Phase, cell) %>%
+  pivot_wider(names_from = hospital, values_from = cell) %>%
+  select(Phase, TPCH, RBWH, GCUH) # in intervention order
+#
+ftab = flextable(for_table) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
 
 #### Time-to-event model checking (clinical-led discussion)
 
@@ -453,15 +514,23 @@ Here we plot the baseline hazard in each team. This is useful for checking the d
 
 ```{r, fig.width=8}
 base = basehaz(cox_model_care_review, centered=TRUE) %>%
-  tidyr::separate(strata, into=c('hospital','team'))
-bplot = ggplot(data=base, aes(x=time, y=hazard, col=team)) +
+  tidyr::separate(strata, into=c('hospital','team')) %>%
+  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+# add team numbers to legend
+counts = group_by(base, hospital, team) %>%
+  tally() %>%
+  mutate(team_number = paste(team, ' (', n, ')', sep=''))
+base = left_join(base, counts, by=c('hospital','team'))
+#
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=team_number)) +
   geom_line() +
-  scale_color_hue('Team') +
+  scale_color_hue('Team (number of patients)') +
 #  scale_y_continuous(limits=c(0,1)) + # 
-  scale_x_continuous(limits=c(0,pred_time)) +
+  #scale_x_continuous(limits=c(0,pred_time)) +
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
   xlab('Time, days') +
   ylab('Cumulative hazard') +
-  facet_wrap(~hospital) +
+  facet_wrap(~hosp_ordered) +
   g.theme
 bplot
 ```
@@ -498,9 +567,9 @@ The scales on the y-axis are different. Because of the strong skew in times, we 
 
 Here we check whether there are influential patients in the Cox time-to-event analysis. An influential patient is one who has a large effect of the estimates and hence any inference.
 
-The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
+The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. These plots are for model checking and will not be presented in papers or reports. 
 
-```{r, figure.width=11, fig.height=3}
+```{r, fig.width=11, fig.height=3}
 # use nicer names in facet labels
 varnames = names(cox_model_care_review$coefficients)
 names(cox_model_care_review$coefficients) = nice_rename(varnames)
@@ -538,7 +607,7 @@ totals = group_by(stats, hospital, int_time) %>%
 #
 to_table = left_join(stats2, totals, by=c('hospital','int_time')) %>%
   select(hospital, int_time, Prior, Censored, No, Yes, Total) %>% # order rows 
-  arrange(hospital, int_time) %>%
+  arrange(desc(hospital), int_time) %>%  # in order of intervention
   rename('Intervention time' = 'int_time') %>%
   mutate_all(zeros)
 ftab = flextable(to_table) %>%
@@ -554,7 +623,7 @@ The table shows the number of patients and percentage in parentheses.
 
 There were eight outcomes and multiple outcomes could be ticked. The "Other" responses are too varied to summarise. 
 
-##### Frequency table of care directive review outcomes
+##### Frequency table of care directive review outcomes (all hospitals combined)
 
 ```{r}
 # make frame for later use
@@ -564,7 +633,8 @@ care_directive_types = filter(care_directive, change_5 == 'Yes') %>%
   mutate(Action = nice.rename.directive(num),
          num = as.numeric(str_remove_all(num, '[^0-9]')),
          numf = factor(num, levels=1:8, labels=care_directives), 
-         checked = factor(checked, levels=c('Checked','Unchecked'), labels=c('Yes','No')))
+         checked = factor(checked, levels=c('Checked','Unchecked'), labels=c('Yes','No'))) %>%
+  unique() # just one per patient and outcome
 counts = group_by(care_directive_types, int_time, Action, checked) %>%
   tally() %>%
   group_by(int_time, Action) %>%
@@ -602,7 +672,7 @@ ftab
 
 The table shows the number of patients and percentage in parentheses. The table rows are ordered by frequency. The "Other" actions are too varied to summarise. 
 
-##### Bar plot of care directive review outcomes 
+##### Bar plot of care directive review outcomes (all hospitals combined)
 
 ```{r, fig.width=8}
 for.plot = left_join(counts, overall, by='Action') 
@@ -624,7 +694,7 @@ The plot results are ordered by frequency.
 ##### Upset plot of care directive review outcome combinations
 
 Multiple options could be ticked for the care review outcomes, meaning that patients could have combinations of outcomes from a care directive review. 
-The plots below shows the top ten combinations split by intervention phase.
+The plots below shows the top ten combinations split by intervention phase for all hospitals combined.
 
 ```{r, fig.width=7, fig.height=9}
 ## get combinations of yes responses
@@ -740,13 +810,12 @@ Here we use survival analysis to examine the time to the first care directive me
 
 ```{r, include=FALSE}
 ## prepare data for cumulative and instantaneous survival models
-# exclude prior:
 for_model_care_directive = filter(survival_data,
                   outcome == 'care_directive',
-                  int_time != 'Establishment', # excluded from analysis
-                  event != 'Prior') %>%
-  mutate(  event = as.character(event), # needed for ifelse below
-           event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+                  int_time != 'Establishment') %>% # excluded from analysis
+  mutate(event = as.character(event), # needed for ifelse below
+         event = ifelse(event== 'Prior', 'Yes', event), # prior counted as early event
+         event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
 
 # add variables from baseline data
 for_model_care_directive = left_join(for_model_care_directive, data_to_add, by='participant_id')
@@ -756,11 +825,6 @@ for_model_care_directive = left_join(for_model_care_directive, data_to_add, by='
 n_excluded_establishment = nrow(filter(survival_data, 
                                outcome == 'care_directive',
                                int_time == 'Establishment'))
-# b) prior
-n_excluded_prior = nrow(filter(survival_data, 
-                               outcome == 'care_directive',
-                               int_time != 'Establishment', # avoid double-counting of those excluded for this reason
-                               event == 'Prior'))
 ```
 
 
@@ -789,6 +853,7 @@ for (hosp in c('RBWH','TPCH','GCUH')){
 }
 # add CI
 to_plot = mutate(plot_data,
+                 hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')), # to show in intervention order
                  z = qnorm(0.975),
                  lower  = est - (z*sqrt(var)),
                  upper  = est + (z*sqrt(var)),
@@ -797,14 +862,15 @@ to_plot = mutate(plot_data,
 alt_plot = ggplot(to_plot, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
   geom_ribbon(alpha=0.2) +
   geom_line(size = 1.05) +  # make lines thicker
-  scale_y_continuous(limits=c(0,1)) + # 
-  scale_x_continuous(limits=c(0,pred_time)) + # limit based on censoring
+  scale_y_continuous(limits=c(0,0.8)) + # 
+  #scale_x_continuous(limits=c(0,pred_time)) + # limit based on censoring
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
   theme_bw() +
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Days from ward admission') +
   ylab('Cumulative probability') +
   theme(legend.position = c(0.85, 0.15)) +
-  facet_wrap(~hospital)
+  facet_wrap(~hosp_ordered)
 alt_plot
 
 # for text, number of events post cut-off
@@ -819,7 +885,7 @@ We limited the plot to the first `r pred_time` days because there were only `r p
 
 ```{r}
 # Cox model stratified on team within hospital
-cox_model_care_directive = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex + strata(team), data = for_model_care_directive)
+cox_model_care_directive = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = for_model_care_directive)
 # number missing:
 n_missing = nrow(for_model_care_directive) - cox_model_care_directive$n
 # table
@@ -841,7 +907,36 @@ ft
 We used a Cox proportional hazards model stratified on team. The table shows the hazard ratios (HRs) and 95% confidence intervals (CIs).
 Age increased the hazard of the first care directive, meaning it was associated with shorter times to the first clinician-led review. 
 
-There were `r n_excluded_establishment` patients excluded as they were in the establishment phase and `r n_excluded_prior` because they already had a valid review prior to this admission. The total number of patients in the time-to-event model was `r format(nrow(for_model_care_directive), big.mark=',')`. The number of patients censored was `r sum(for_model_care_directive$event== 'Censored')`. There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
+There were `r n_excluded_establishment` patients excluded as they were in the establishment phase. The total number of patients in the time-to-event model was `r format(nrow(for_model_care_directive), big.mark=',')`. The number of patients censored was `r sum(for_model_care_directive$event== 'Censored')`. There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
+
+##### Results per hospital
+
+The results below are from separate Cox models in each hospital.
+
+```{r}
+all_ests = NULL
+for (hosp in c("GCUH","TPCH",'RBWH')){
+  # Cox model stratified on team within hospital
+  cox_model_care_directive_hosp = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = filter(for_model_care_directive, hospital==hosp))
+  #
+  ests = tidy(cox_model_care_directive_hosp, conf.int = TRUE) %>%
+    mutate(hospital = hosp)
+  all_ests = bind_rows(all_ests, ests)
+}
+  all_ests = filter(all_ests, !is.na(estimate)) %>%
+  mutate(Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
+  select(Variable, hospital, cell) %>%
+  pivot_wider(values_from=cell, names_from=hospital) %>%
+    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+ft = flextable(all_ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
 
 ##### Absolute measure of difference
 
@@ -860,6 +955,32 @@ ftab = flextable(risk_difference) %>%
 ftab
 ```
 
+##### Absolute measure of difference by hospital
+
+```{r}
+all_diffs = NULL
+for (hosp in c("GCUH","TPCH",'RBWH')){
+  risk_difference = risk_diff(
+    indata = filter(for_model_care_directive, hospital==hosp),
+    inmodel= cox_model_care_directive,
+    B = n_boot,
+    pred_time = pred_time) %>%
+    mutate(hospital = hosp)
+  all_diffs = bind_rows(all_diffs, risk_difference)
+}
+#
+for_table = mutate(all_diffs, cell = paste(Event, ' (', CI, ')', sep='')) %>%
+  select(hospital, Phase, cell) %>%
+  pivot_wider(names_from = hospital, values_from = cell) %>%
+  select(Phase, TPCH, RBWH, GCUH) # in intervention order
+#
+ftab = flextable(for_table) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+
 
 #### Time-to-event model checking (care directive review)
 
@@ -869,14 +990,22 @@ Here we plot the baseline hazard in each team. This is useful for checking the d
 
 ```{r, fig.width=8}
 base = basehaz(cox_model_care_directive, centered=TRUE) %>%
-  tidyr::separate(strata, into=c('hospital','team'))
-bplot = ggplot(data=base, aes(x=time, y=hazard, col=team)) +
+  tidyr::separate(strata, into=c('hospital','team')) %>%
+  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) # 
+# add team numbers to legend
+counts = group_by(base, hospital, team) %>%
+  tally() %>%
+  mutate(team_number = paste(team, ' (', n, ')', sep=''))
+base = left_join(base, counts, by=c('hospital','team'))
+#
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=team_number)) +
   geom_line() +
-  scale_color_hue('Team') +
-  scale_x_continuous(limits=c(0,pred_time)) +
+  scale_color_hue('Team (number of patients)') +
+ # scale_x_continuous(limits=c(0,pred_time)) +
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
   xlab('Time, days') +
   ylab('Cumulative hazard') +
-  facet_wrap(~hospital) +
+  facet_wrap(~hosp_ordered) +
   g.theme
 bplot
 ```
@@ -917,7 +1046,7 @@ Here we check whether there are influential patients in the Cox time-to-event an
 
 The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
 
-```{r, figure.width=11, fig.height=3}
+```{r, fig.width=11, fig.height=3}
 # use nicer names in facet labels
 varnames = names(cox_model_care_directive$coefficients)
 names(cox_model_care_directive$coefficients) = nice_rename(varnames)
@@ -992,10 +1121,10 @@ Here we use time-to-event analysis to examine the time to the first palliative c
 # exclude prior:
 for_model_palliative = filter(survival_data,
                   outcome == 'palliative_care_referral',
-                  int_time != 'Establishment', # excluded from analysis
-                  event != 'Prior') %>%
-  mutate(  event = as.character(event), # needed for ifelse below
-           event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+                  int_time != 'Establishment') %>% # excluded from analysis
+  mutate(event = as.character(event), # needed for ifelse below
+         event = ifelse(event== 'Prior', 'Yes', event), # prior to early yes
+         event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
 
 # add variables from baseline data (age, sex)
 for_model_palliative = left_join(for_model_palliative, data_to_add, by='participant_id')
@@ -1005,14 +1134,9 @@ for_model_palliative = left_join(for_model_palliative, data_to_add, by='particip
 n_excluded_establishment = nrow(filter(survival_data, 
                                outcome == 'palliative_care_referral',
                                int_time == 'Establishment'))
-# b) prior
-n_excluded_prior = nrow(filter(survival_data, 
-                               outcome == 'palliative_care_referral',
-                               int_time != 'Establishment', # avoid double-counting of those excluded for this reason
-                               event == 'Prior'))
 ```
 
-##### Cumulative probability plot (palliative care)
+##### Cumulative probability plot (palliative care referral)
 
 ```{r, fig.width=7}
 ## cumulative probability plot
@@ -1037,6 +1161,7 @@ for (hosp in c('RBWH','TPCH','GCUH')){
 }
 # add CI
 to_plot = mutate(plot_data,
+                 hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')), # to show in intervention order
                  z = qnorm(0.975),
                  lower  = est - (z*sqrt(var)),
                  upper  = est + (z*sqrt(var)),
@@ -1045,14 +1170,15 @@ to_plot = mutate(plot_data,
 alt_plot = ggplot(to_plot, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
   geom_ribbon(alpha=0.2) +
   geom_line(size = 1.05) +  # make lines thicker
-  scale_y_continuous(limits=c(0, 0.4)) + # reduce white space
-  scale_x_continuous(limits=c(0,pred_time)) + # limit based on censoring
+  scale_y_continuous(limits=c(0, 0.3)) + # reduce white space
+  #scale_x_continuous(limits=c(0,pred_time)) + # limit based on censoring
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
   theme_bw() +
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Days from ward admission') +
   ylab('Cumulative probability') +
-  theme(legend.position = c(0.85, 0.85)) + # these numbers are proportional
-  facet_wrap(~hospital)
+  theme(legend.position = c(0.87, 0.15)) + # these numbers are proportional
+  facet_wrap(~hosp_ordered)
 alt_plot
 
 
@@ -1070,7 +1196,7 @@ Note the y-axis upper limit was set below 1 due to the relatively small number o
 
 ```{r}
 # Cox model stratified on team within hospital
-cox_model_palliative = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex + strata(team), data = for_model_palliative)
+cox_model_palliative = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = for_model_palliative)
 # number missing:
 n_missing = nrow(for_model_palliative) - cox_model_palliative$n
 # table
@@ -1092,7 +1218,37 @@ ft
 Older age had a higher hazard ratio meaning a shorter time to palliative care referral. Women had a hazard ratio below one, meaning a longer time to palliative care referral. 
 
 
-There were `r n_excluded_establishment` patients were excluded as they were in the establishment phase and `r n_excluded_prior` because they already had a valid review prior to this admission. The total number of patients in the time-to-event model was `r format(nrow(for_model_palliative), big.mark=',')`. The number of patients censored was `r sum(for_model_palliative$event== 'Censored')`. There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
+There were `r n_excluded_establishment` patients were excluded as they were in the establishment phase. The total number of patients in the time-to-event model was `r format(nrow(for_model_palliative), big.mark=',')`. The number of patients censored was `r sum(for_model_palliative$event== 'Censored')`. There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
+
+##### Results per hospital
+
+The results below are from separate Cox models in each hospital.
+
+```{r}
+all_ests = NULL
+for (hosp in c("GCUH","TPCH",'RBWH')){
+  # Cox model stratified on team within hospital
+  cox_model_palliative_hosp = coxph(Surv(time = time, event = event== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = filter(for_model_palliative, hospital==hosp))
+  #
+  ests = tidy(cox_model_palliative_hosp, conf.int = TRUE) %>%
+    mutate(hospital = hosp)
+  all_ests = bind_rows(all_ests, ests)
+}
+  all_ests = filter(all_ests, !is.na(estimate)) %>%
+  mutate(Variable = nice_rename(term), # see 99_functions
+    HR = roundz(exp(estimate),2),
+    conf.low = roundz(exp(conf.low),2),
+    conf.high = roundz(exp(conf.high),2),
+    cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
+  select(Variable, hospital, cell) %>%
+  pivot_wider(values_from=cell, names_from=hospital) %>%
+    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+ft = flextable(all_ests) %>%
+  theme_box() %>%
+  autofit()
+ft
+```
+
 
 ##### Absolute measure of difference
 
@@ -1111,9 +1267,33 @@ ftab = flextable(risk_difference) %>%
 ftab
 ```
 
+##### Absolute measure of difference by hospital
+
+```{r}
+all_diffs = NULL
+for (hosp in c("GCUH","TPCH",'RBWH')){
+  risk_difference = risk_diff(
+    indata = filter(for_model_palliative, hospital==hosp),
+    inmodel= cox_model_palliative,
+    B = n_boot,
+    pred_time = pred_time) %>%
+    mutate(hospital = hosp)
+  all_diffs = bind_rows(all_diffs, risk_difference)
+}
+#
+for_table = mutate(all_diffs, cell = paste(Event, ' (', CI, ')', sep='')) %>%
+  select(hospital, Phase, cell) %>%
+  pivot_wider(names_from = hospital, values_from = cell) %>%
+  select(Phase, TPCH, RBWH, GCUH) # in intervention order
+#
+ftab = flextable(for_table) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
 
 
-#### Time-to-event model checking (palliative care)
+#### Time-to-event model checking (palliative care referral)
 
 ##### a) Baseline hazard
 
@@ -1121,14 +1301,22 @@ Here we plot the baseline hazard in each team. This is useful for checking the d
 
 ```{r, fig.width=8}
 base = basehaz(cox_model_palliative, centered=TRUE) %>%
-  tidyr::separate(strata, into=c('hospital','team'))
-bplot = ggplot(data=base, aes(x=time, y=hazard, col=team)) +
+  tidyr::separate(strata, into=c('hospital','team')) %>%
+  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) # 
+# add team numbers to legend
+counts = group_by(base, hospital, team) %>%
+  tally() %>%
+  mutate(team_number = paste(team, ' (', n, ')', sep=''))
+base = left_join(base, counts, by=c('hospital','team'))
+#
+bplot = ggplot(data=base, aes(x=time, y=hazard, col=team_number)) +
   geom_line() +
   scale_color_hue('Team') +
-  scale_x_continuous(limits=c(0,pred_time)) +
+  #scale_x_continuous(limits=c(0,pred_time)) +
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
   xlab('Time, days') +
   ylab('Cumulative hazard') +
-  facet_wrap(~hospital) +
+  facet_wrap(~hosp_ordered) +
   g.theme
 bplot
 ```
@@ -1169,7 +1357,7 @@ Here we check whether there are influential patients in the Cox time-to-event an
 
 The plot below shows the 'dfbetas' which are the estimated changes in the regression coefficients after deleting each observation patient in turn. 
 
-```{r, figure.width=11, fig.height=3}
+```{r, fig.width=12, fig.height=3}
 # use nicer names in facet labels
 varnames = names(cox_model_palliative$coefficients)
 names(cox_model_palliative$coefficients) = nice_rename(varnames)
@@ -1197,7 +1385,8 @@ ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz=
 ref_datetime = as.numeric(ref_datetime)
 # intervention times
 load('data/date_changes.RData') # from 0_date_changes.R
-lines = select(date_changes, hospital, date_intervention) %>%
+date_changes = mutate(date_changes, hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+lines = select(date_changes, hospital, hosp_ordered, date_intervention) %>%
   mutate(line = as.POSIXct(date_intervention, tz='Australia/Brisbane'),
          line = as.numeric(line),
          time = (line - ref_datetime)/(60*60*24)) # difference from starting date
@@ -1232,33 +1421,33 @@ ft
 
 There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
 
-#### Plot baseline cumulative hazard
+#### Plot of baseline cumulative hazard for clinician-led care review discussion
 
 ```{r, fig.width=8}
 #
 base = basehaz(cox_model_care_review_calendar, centered=TRUE) %>%
-  rename('hospital' = 'strata')
+  rename('hospital' = 'strata') 
 # extra step needed to scramble baseline hazard
 if(scramble == TRUE){base = scramble_hazard(base)}
-# diagonal reference line - add after scrambling
-startend = group_by(base, hospital) %>%
-  arrange(time) %>%
-  filter(row_number()==1 | row_number()==n())
+# make data for difference plot:
+diff_plot = base_haz_difference(inbase = base) 
 # plot
-bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
+bplot = ggplot(data=diff_plot, aes(x=time, y=diff, col=hosp_ordered)) +
   geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
   geom_line() +
-  geom_line(data=startend, aes(x=time, y=hazard), lty=3) +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Calendar time, days since 25-May-2020') +
-  ylab('Cumulative hazard') +
-  facet_wrap(~hospital, scales='free_y') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~hosp_ordered, scales='free_y') +
   g.theme+
   theme(legend.position='none')
 bplot
 ```
 
-The vertical dotted line shows the change-over to the establishment phase. The four weeks of establishment phase have been removed to avoid a break in the plot.
+The plot shows the difference in the baseline cumulative hazard from a simple linear interpolation of the hazard between the first and last time. Higher values indicate more events than average, and lower values fewer events. The vertical dotted line shows the change-over to the establishment phase. 
+
+The four weeks of establishment phase have been removed to avoid a break in the plot.
 
 ### b) Time to care directives documents
 
@@ -1289,36 +1478,36 @@ ft
 
 There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
 
-#### Plot baseline cumulative hazard
+#### Plot of baseline cumulative hazard for care directives documents
 
 ```{r, fig.width=8}
 #
 base = basehaz(cox_model_care_directive_calendar, centered=TRUE) %>%
-  rename('hospital' = 'strata')
+  rename('hospital' = 'strata') 
 # extra step needed to scramble baseline hazard
 if(scramble == TRUE){base = scramble_hazard(base)}
-# diagonal reference line - add after scrambling
-startend = group_by(base, hospital) %>%
-  arrange(time) %>%
-  filter(row_number()==1 | row_number()==n())
+# make data for difference plot:
+diff_plot = base_haz_difference(inbase = base) 
 # plot
-bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
+bplot = ggplot(data=diff_plot, aes(x=time, y=diff, col=hosp_ordered)) +
   geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
   geom_line() +
-  geom_line(data=startend, aes(x=time, y=hazard), lty=3) +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Calendar time, days since 25-May-2020') +
-  ylab('Cumulative hazard') +
-  facet_wrap(~hospital, scales='free_y') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~hosp_ordered, scales='free_y') +
   g.theme+
   theme(legend.position='none')
 bplot
 ```
 
-The vertical dotted line shows the change-over to the establishment phase. The four weeks of establishment phase have been removed to avoid a break in the plot.
+The plot shows the difference in the baseline cumulative hazard from a simple linear interpolation of the hazard between the first and last time. Higher values indicate more events than average, and lower values fewer events. The vertical dotted line shows the change-over to the establishment phase. 
+
+The four weeks of establishment phase have been removed to avoid a break in the plot.
 
 
-### c) Time to palliative care
+### c) Time to palliative care referral
 
 ```{r}
 # put data on alternative time scale 
@@ -1347,34 +1536,34 @@ ft
 
 There were `r n_missing` patients excluded from the time-to-event analysis due to missing data.
 
-#### Plot baseline cumulative hazard
+#### Plot of baseline cumulative hazard for palliative care referral
 
 ```{r, fig.width=8}
 #
 base = basehaz(cox_model_palliative_calendar, centered=TRUE) %>%
-  rename('hospital' = 'strata')
+  rename('hospital' = 'strata') %>%
+  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
 # extra step needed to scramble baseline hazard
 if(scramble == TRUE){base = scramble_hazard(base)}
-# diagonal reference line - add after scrambling
-startend = group_by(base, hospital) %>%
-  arrange(time) %>%
-  filter(row_number()==1 | row_number()==n())
+# make data for difference plot:
+diff_plot = base_haz_difference(inbase = base) 
 # plot
-bplot = ggplot(data=base, aes(x=time, y=hazard, col=hospital)) +
+bplot = ggplot(data=diff_plot, aes(x=time, y=diff, col=hosp_ordered)) +
   geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
   geom_line() +
-  geom_line(data=startend, aes(x=time, y=hazard), lty=3) +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
   scale_color_manual(NULL, values=cbPalette) +
   xlab('Calendar time, days since 25-May-2020') +
-  ylab('Cumulative hazard') +
-  facet_wrap(~hospital, scales='free_y') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~hosp_ordered, scales='free_y') +
   g.theme+
   theme(legend.position='none')
 bplot
 ```
 
-The vertical dotted line shows the change-over to the establishment phase. The four weeks of establishment phase have been removed to avoid a break in the plot.
+The plot shows the difference in the baseline cumulative hazard from a simple linear interpolation of the hazard between the first and last time. Higher values indicate more events than average, and lower values fewer events. The vertical dotted line shows the change-over to the establishment phase. 
 
+The four weeks of establishment phase have been removed to avoid a break in the plot.
 
 
 ## Sensitivity analyses #2: weekend and after-hours effects
@@ -1410,7 +1599,7 @@ ft
 The table shows the hazard ratios and 95% confidence intervals. 
 Care reviews are far more likely to occur in-hours. This strong effect is also shown in the previous circular plots.
 
-### b) care directive documents
+### b) Completion of care directive documents
 
 ```{r}
 # create long versions of weekend time with changes for in hours vs other hours
@@ -1438,7 +1627,7 @@ The table shows the hazard ratios and 95% confidence intervals.
 Care directives are far more likely to occur in-hours.
 
 
-### c) palliative care
+### c) palliative care referral
 
 ```{r}
 # create long versions of weekend time with changes for in hours vs other hours
@@ -1462,7 +1651,7 @@ ft = flextable(ests) %>%
 ft
 ```
 
-Palliative care referrals are far more likely to occur in-hours.
+Palliative care referrals are far more likely to occur in-hours and less likely to occur for women.
 
 ## Sensitivity analyses #3: Interaction with SPICT and CriSTAL scores
 
@@ -1473,7 +1662,7 @@ To do this we included the SPICT and CriSTAL scores, and interaction terms betwe
 
 ```{r}
 # add variables to data
-less_baseline = select(baseline, -age, -pt_sex, -team)
+less_baseline = select(baseline, -age, -pt_sex, -team, -cristal_score, -spict_score)
 for_model_care_review = left_join(for_model_care_review, less_baseline, by="participant_id")
 
 # had to set this, even though I don't use it
@@ -1594,11 +1783,13 @@ We check for co-linearity using the variance inflation factor (VIF). A VIF over 
 
 # Exploratory analysis of time to high-risk
 
-Time between patient admission to the recruited clinical team to first high-risk CriSTAL or SPICT-positive identification in the usual care phase with the corresponding duration in the intervention phase. We use the form complete time to determine the time of CriSTAL or SPICT-positive. This analysis is just for those found to be at risk.
+Here we examine the time between the: 1) admission to the recruited clinical team, and 2) first high-risk CriSTAL or SPICT-positive identification. We compare these times for the usual care and intervention phases. The purpose of this analysis is to check whether there was not a speeding (or slowing) of this time as this could confound the effects of the intervention. 
+
+We use the form complete time to determine the time of CriSTAL or SPICT-positive. This analysis is just for those found to be at risk (using either the CRiSTAL or SPICT).
 
 ```{r, fig.width=7.5}
 # time from admission to median form
-explore = select(baseline, hospital, participant_id, at_risk, int_time, admission_datetime, median_form) %>%
+explore = select(baseline, hospital, hosp_ordered, participant_id, at_risk, int_time, admission_datetime, median_form) %>%
   filter(at_risk == 'At risk') %>% # just at risk
   mutate(time = (as.numeric(median_form) - as.numeric(admission_datetime))/(60*60*24)) # in days
 hplot = ggplot(data=explore, aes(x=int_time, y=time)) +
@@ -1607,10 +1798,9 @@ hplot = ggplot(data=explore, aes(x=int_time, y=time)) +
   ylab('Time from admission, days') +
   coord_flip() +
   g.theme+
-  facet_wrap(~hospital)
+  facet_wrap(~hosp_ordered)
 hplot
 ```
-
 
 # Time to documentation.
 
@@ -1650,4 +1840,108 @@ ftab
 ```
 
 
+## Sensitivity analyses #4: CRiSTAL and SPICT scores over time by hospital
+
+Here we examine average CRiSTAL and SPICT scores over time for at-risk patients. This analysis was added after seeing the original results and the importance of CRiSTAL and SPICT scores on the three outcomes. The aim is to see if there was a general change in case-mix over time.
+
+#### a) CRiSTAL score over time by hospital
+
+```{r, fig.width=8}
+for_plot = filter(baseline, 
+                   redcap_version == 3,
+                   at_risk == "At risk")
+# add smooth
+gplot = ggplot(data=for_plot, aes(x=admission_date, y=cristal_score))+
+#  geom_point(pch=1, col='grey66')+
+  geom_vline(data=date_changes, aes(xintercept=date_intervention), lty=2) + # vertical reference line at intervention time
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at intervention time
+  geom_smooth(col='dark red', method = "loess", se=TRUE, span=0.8)+
+  xlab('Admission date')+
+  ylab('Mean CRiSTAL score')+
+#  scale_y_continuous(breaks=seq(0,12,2))+
+  facet_wrap(~hosp_ordered)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())
+gplot
+```
+
+The dotted vertical line is the time of the change to the intervention phase. 
+
+#### b) SPICT score over time by hospital
+
+```{r, fig.width=8}
+# add smooth
+gplot = ggplot(data=for_plot, aes(x=admission_date, y=spict_score))+
+  geom_vline(data=date_changes, aes(xintercept=date_intervention), lty=2) + # vertical reference line at intervention time
+  geom_smooth(col='dark blue', method = "loess", se=TRUE, span=0.8)+
+  xlab('Admission date')+
+  ylab('Mean SPICT score')+
+#  scale_y_continuous(breaks=seq(0,12,2))+
+  facet_wrap(~hosp_ordered)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())
+gplot
+```
+
+The dotted vertical line is the time of the change to the intervention phase. 
+
+## Sensitivity analyses #5: unplanned admissions over time by hospital
+
+Here we examine unplanned admissions over time. We exclude general medical wards. The aim is to see if COVID had an impact on the types of patients over time. 
+
+```{r, fig.width=8}
+for_plot = filter(baseline, 
+                   redcap_version == 3,
+                   at_risk == "At risk",
+                  !str_detect(string=team, pattern='Medicine')) %>% # exclude gen-med
+  mutate(unplanned = as.numeric(spict_unplan_hosp=='Yes')) # make into a number for plotting, yes vs no/unknown
+# add smooth
+gplot = ggplot(data=for_plot, aes(x=admission_date, y=unplanned))+
+  geom_vline(data=date_changes, aes(xintercept=date_intervention), lty=2) + # vertical reference line at intervention time
+  geom_smooth(col='dark blue', method = "loess", se=TRUE, span=0.8)+
+  xlab('Admission date')+
+  ylab('Unplanned admission')+
+  facet_wrap(~hosp_ordered)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())
+gplot
+```
+
+The smooth line is applied to a numerical version of unplanned hospital admission that is 1 for "yes" and otherwise. The confidence interval for the smooth is sometimes greater than 1. 
+
+## Sensitivity analyses #6: number of patients over time
+
+Here we examine the number of patients entered into the study over time. The aim is to check whether there was a slowing-down in patients at particular times. The plot shows all patients entered into the database, not just those at risk. 
+
+```{r, fig.width=8}
+library(splines)
+# make frame of all dates
+all_dates = seq(min(baseline$admission_date, na.rm=TRUE), max(baseline$admission_date, na.rm=TRUE), 1)
+all_dates = expand.grid(hospital=c('TPCH','RBWH','GCUH'), admission_date=all_dates)
+# Poisson model
+for_model = group_by(baseline, admission_date, hospital) %>%
+  tally() %>%
+  right_join(all_dates, by=c('hospital','admission_date')) %>%
+  mutate(n = ifelse(is.na(n)==TRUE, 0, n))
+poisson_model = glm(n ~ ns(admission_date,4):hospital + hospital, data=for_model, family=poisson())
+pred = as.data.frame(predict.glm(poisson_model, se.fit=TRUE))
+for_model = bind_cols(for_model, pred) %>%
+        mutate( z = qnorm(0.975),
+                   lower = fit - (z*se.fit),
+                   upper = fit + (z*se.fit),
+                hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) # to show in intervention order)
+# plot
+gplot = ggplot(data=for_model, aes(x=admission_date, y=fit, ymin=lower, ymax=upper))+
+  geom_vline(data=date_changes, aes(xintercept=date_intervention), lty=2) + # vertical reference line at intervention time
+  geom_line(size=1.05, col='darkorange2')+
+  geom_ribbon(alpha=0.2)+
+  xlab('Admission date')+
+  ylab('Daily number of patients')+
+  facet_wrap(~hosp_ordered)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())
+gplot
+```
+
 # References
+

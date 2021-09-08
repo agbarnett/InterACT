@@ -1,11 +1,11 @@
 # 98_survival_function.R
 # make the survival data for the in-hospital outcomes (outcomes 4, 5 and 6)
 # surprisingly difficult!
-# June 2021
+# Sep 2021
 
 make_survival_times = function(
   indata = baseline,
-  max_censor = 60, # maximum plausible time, censor after this
+  max_censor = 365, # maximum plausible time, censor after this
   date_changes_time = date_changes_time,
   form = clinicianled_review ,
   change_var = 'care_review',
@@ -52,12 +52,31 @@ make_survival_times = function(
       mutate(event = as.character(event),
              datetime = ifelse(event=='No', form_date, outcome_date), # date used depends on outcome
              datetime = as.POSIXct(datetime, origin='1970-01-01', tz='Australia/Brisbane')) %>%
-      select(participant_id, redcap_version, datetime, event) %>%
       filter(!is.na(event)) # remove few missing event
     if(nrow(this_o)==0){next} # do not add, can only do time to outcome in patients with at least one assessment
-    # Prior if already known to palliative care
-    if(any(this_o$event == 'Known to Pall Care')){
-      frame = data.frame(participant_id = this_id, redcap_version=this_redcap, event='Prior')
+    if(change_var !='change_5'){this_o = select(this_o, participant_id, redcap_version, datetime, event)}
+    if(change_var =='change_5'){this_o = select(this_o, participant_id, redcap_version, datetime, event, existing_arp)}
+    # Prior if existing ARP - new Sept 2021
+    if(change_var =='change_5'){
+      if(any(this_o$existing_arp == 'Yes, valid' , na.rm=TRUE)){ #
+        frame = data.frame(participant_id = this_id, 
+                           redcap_version = this_redcap, 
+                           datetime_1 = admission,
+                           datetime_2 = admission,
+                           time = 0.001,
+                           event = 'Prior')
+        prior = bind_rows(prior, frame) 
+        next 
+      }
+    }
+    # Prior if already known to palliative care at first visit
+    if(this_o$event[1] == 'Known to Pall Care' & change_var =='pall_care'){
+      frame = data.frame(participant_id = this_id, 
+                         redcap_version=this_redcap, 
+                         datetime_1 = admission,
+                         datetime_2 = admission,
+                         time = 0.001,
+                         event='Prior')
       prior = bind_rows(prior, frame) 
       next 
     }
@@ -78,19 +97,24 @@ make_survival_times = function(
     # if "yes" is first date then patient is 'prior' and not suitable for survival analysis
     # should possibly be any yes before admission
     if(all_dates$event[1] =='Yes'){
-      frame = data.frame(participant_id = this_id, redcap_version=this_redcap, event='Prior')
+      frame = data.frame(participant_id = this_id, 
+                         redcap_version = this_redcap, 
+                         datetime_1 = admission,
+                         datetime_2 = admission,
+                         time = 0.001,
+                         event='Prior')
       prior = bind_rows(prior, frame)
       next 
     }
     all_dates = filter(all_dates, post_admission >=1, # remove any dates before admission
-                       post_yes <=0,  # remove any dates after first yes, so double yes is not an isse
+                       post_yes <=0,  # remove any dates after first yes, this avoids creating patients with two Yes's
                        post_discharge <=0,  # remove any dates after discharge
                        post_follow_up <=0) %>% # remove any dates after end of follow-up
       group_by(event) %>%
       arrange(event, desc(datetime)) %>% # oldest datetime first
       slice(1) %>% # if two or more No's in a row choose latest (works because there are no two No's in a row)
       ungroup() %>%
-      arrange(datetime)%>%
+      arrange(datetime) %>%
       mutate(event_short = case_when(
         event == 'admission_datetime' ~ 'A',
         event == 'No' ~ 'N',
@@ -101,7 +125,7 @@ make_survival_times = function(
         is.character(event) ~ event
       ))
     
-    # make string of events, to here
+    # make string of events
     events_string = data.frame(participant_id=this_id, events=paste(all_dates$event_short, collapse=', '))
     all_events= bind_rows(all_events, events_string)
     
@@ -123,6 +147,7 @@ make_survival_times = function(
   ids = filter(all_events, events %in% c('A, N, D', 'A, N, P', 'A, N, I', 'A, N, I, D', 'A, N, I, P')) %>% pull(participant_id)
   to_no = filter(event_data, participant_id %in% ids,
                  event_short %in% c('A','N')) # just admission and no
+  
   ## version 2 with competing risk of discharge (time to yes remains the same)
   # time to intervention (censor there)
   ids = filter(all_events, events %in% c('A, I, D','A, I, N, D','A, I, N, P','A, I, N, Y','A, I, P','A, I, Y','A, N, I, D','A, N, I, P')) %>% pull(participant_id)
@@ -170,6 +195,14 @@ make_survival_times = function(
     ))
   
   ## random checks
+  # prior
+  prior = filter(to_export, event=='Prior') %>% sample_n(3) %>% arrange(participant_id)
+  cat('*Prior*:\n')
+  cat('From processed data:\n')
+  print(prior)
+  cat('From original data:\n')
+  prior_form = filter(form, participant_id %in% prior$participant_id)  %>% arrange(participant_id)
+  print(prior_form)
   # yes
   yes = filter(to_export, event=='Yes') %>% sample_n(3) %>% arrange(participant_id)
   cat('*Yes*:\n')
@@ -197,13 +230,16 @@ make_survival_times = function(
                      time = ifelse(flag == TRUE, max_censor, time),
                      event = ifelse(flag == TRUE, 'Censored', event)) %>%
       select(-flag)
+  }
+  index = to_export2$time > max_censor
+  if(any(index)){
+    cat('Truncated ', sum(index, na.rm=TRUE), ' observations as time was beyond ', max_censor, ' days.', sep='')
     to_export2 = mutate(to_export2,
                        flag = time >= max_censor,
                        flag = ifelse(is.na(flag), FALSE, flag),
                        time = ifelse(flag == TRUE, max_censor, time),
                        event = ifelse(flag == TRUE, 'Censored', event)) %>%
       select(-flag)
-    
   }
   
   # return
