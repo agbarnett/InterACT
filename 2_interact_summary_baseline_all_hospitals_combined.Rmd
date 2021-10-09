@@ -1,0 +1,550 @@
+---
+title: 'InterACT project: overall statistical analyses for all three hospitals. Version not split by hospital.'
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+    reference_docx: rmarkdown-styles-reference.docx
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+source('99_functions.R')
+library(cmprsk) # for cumulative incidence
+library(broom) # for regression models
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(visdat) # for missing data
+library(flextable)
+library(summarytools)
+# global options for summary tools
+st_options(plain.ascii = FALSE,       # Always use this option in Rmd documents
+            style = "rmarkdown",        # This too
+            round.digits = 0, 
+            headings = FALSE, 
+            footnote = NA,             # Avoids footnotes which would clutter the results
+            subtitle.emphasis = FALSE  # Improves layout with some rmarkdown themes
+) 
+
+## get the data
+data_to_use = 'real'
+file_plus = '' # for figures
+if(data_to_use=='real'){load('data/FullData.RData')} # from 0_read_data.R 
+if(data_to_use=='dummy'){load('data/DummyData.RData'); file_plus='_dummy'} # dummy data from 0_make_dummy_data.R 
+# just use version three
+baseline = filter(baseline, redcap_version==3)
+complete = filter(complete, redcap_version==3)
+care_directive = filter(care_directive, redcap_version==3)
+palliative_care_referral = filter(palliative_care_referral, redcap_version==3)
+clinicianled_review = filter(clinicianled_review, redcap_version==3)
+
+# graphics things:
+library(ggplot2)
+library(ggalluvial) # for Sankey diagram
+library(ggcorrplot) # for correlation matrix
+library(ggupset)  # to plot combination of symptoms
+library(survminer) # for survival plots
+library(gridExtra)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7")
+```
+
+
+## Overall numbers
+
+##### All baseline screening completed  
+
+```{r, results='asis'}
+with(baseline, freq(baseline_screening_complete, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+##### Hospitals, at risk patients for those with baseline screening complete
+
+```{r, results='asis'}
+baseline = filter(baseline, baseline_screening_complete=='Yes')
+with(baseline, freq(at_risk, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+From now on, all results are for those with baseline screening completed
+
+```{r, include=FALSE}
+at_risk = filter(baseline, at_risk =='At risk')
+```
+
+The table shows the numbers by hospital that were either CriSTAL or SPICT positive.
+The total column shows the total number of patients with complete screening.
+
+# Patients screened 
+
+
+### Overall numbers by study time period
+
+The table shows the numbers in each hospital by study time period.
+
+```{r}
+tab = group_by(baseline, int_time) %>%
+  tally() %>%
+  rename(`Time` = 'int_time')
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  merge_v(j=1) %>%
+  autofit()
+ftab
+```
+
+### At-risk numbers by study time period
+
+The table shows the numbers in each hospital by study time period and the number (percent) at risk.
+
+```{r}
+tab = group_by(baseline, int_time, at_risk) %>%
+  tally() %>%
+  group_by(int_time) %>%
+  mutate(percent = prop.table(n)*100,
+         cell = paste(n, ' (', round(percent), ')', sep='')) %>%
+  select(-n, -percent) %>%
+  spread(at_risk, cell) %>%
+  rename(`Time` = 'int_time')
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+### Admission time
+
+```{r, out.width='90%'}
+hplot = ggplot(data=baseline, aes(x=admission_time))+
+  geom_histogram(alpha=0.7, breaks=seq(0,24,1), fill='darkseagreen1', colour='grey77')+
+  xlab('Time of day')+
+  ylab("Count")+
+  scale_x_continuous(breaks=seq(0,24,6))+
+  g.theme
+hplot
+filename = paste('figures/all_sites_admission_time', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(hplot)
+invisible(dev.off())
+```
+
+The majority of patients were admitted in the afternoon and early evening.
+
+### Times between admission and at-risk screening
+
+We examine the time between the patients' admission date/time to the current ward and the InterACT screening. We use two date/times for screening:
+
+* The earliest date/time from the four screening forms: demographics, clinical criteria, functional status and comorbidities. This is an estimate of when screening started.
+* The date/time the screening completion form was completed. This is an estimate of when screening ended.
+
+##### Box plots
+
+```{r, fig.width=8}
+# add screening form completion date
+for_merge = select(complete, participant_id, start_date_time_dcharg) # just date
+to_table = left_join(baseline, for_merge, by='participant_id') %>%
+  mutate(
+    diff_start = (as.numeric(median_form) - as.numeric(admission_datetime))/(60*60*24), # in days from earliest date
+    diff_end = (as.numeric(start_date_time_dcharg) - as.numeric(admission_datetime))/(60*60*24), # in days from latest date
+    admission_datetime = as.POSIXct(as.numeric(admission_datetime), tz='Australia/Brisbane', origin='1970-01-01'),
+    start_date_time_dcharg = as.POSIXct(as.numeric(start_date_time_dcharg), tz='Australia/Brisbane', origin='1970-01-01')
+         ) %>% 
+  select(participant_id, hospital, admission_datetime, start_date_time_dcharg, diff_start, diff_end, at_risk) %>%
+  group_by(participant_id, at_risk) %>%
+  gather(`diff_start`, `diff_end`, key='difference', value='var') %>%
+  ungroup() %>%
+  mutate(difference = ifelse(str_detect(string=difference, pattern='start'), 'Start', 'End'))
+# (checks)
+check = filter(to_table, var>60) %>%
+  select(-at_risk, -var)
+write.csv(check, file='checks/admission_dates.csv', row.names = FALSE, quote=FALSE)
+# plot
+hplot = ggplot(data=to_table, aes(x=var, fill=at_risk))+
+  geom_boxplot(width=0.1)+
+  scale_fill_manual(NULL, values=cbPalette)+
+  xlab('Difference from ward admissision to screening complete (days)')+
+  ylab('')+
+  facet_wrap(~difference)+
+  scale_y_continuous(breaks=NULL)+
+  scale_x_log10()+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())
+hplot
+```
+
+The time axis is on a log scale (base 10) because of the strong positive skew in the difference in times.
+
+##### Summary statistics
+
+```{r}
+stats = group_by(to_table, at_risk, difference) %>%
+  summarise(n = n(),
+            missing = sum(is.na(var)),
+            q1 = roundz(quantile(var, prob=0.25, na.rm=TRUE),1),
+            median = roundz(median(var, na.rm=TRUE),1),
+            q3 = roundz(quantile(var, prob=0.75, na.rm=TRUE),1)) %>%
+  rename('At risk' = 'at_risk',
+         'Screening time' = 'difference')
+ft = flextable(stats)
+autofit(ft)
+```
+
+The statistics are the number observed, number missing, median and inter-quartile range.
+
+# Demographics
+
+### Patient age
+
+The plot is split by CriSTAL/SPICT positive.
+
+```{r, out.width='100%', fig.width=7}
+p <- ggplot(filter(baseline, !is.na(at_risk)), aes(x=factor(at_risk), y=age, fill=factor(at_risk))) + 
+  scale_fill_manual('', values=cbPalette)+
+  geom_violin(alpha=0.6, bw=2)+
+  geom_boxplot(width=0.1)+
+  xlab('')+
+  ylab('Age')+
+  g.theme+
+  theme(legend.position = 'none')
+p
+filename = paste('figures/all_sites_age', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(p)
+invisible(dev.off())
+```
+
+```{r}
+ages = group_by(baseline, at_risk) %>%
+  summarise(mean = mean(age))
+ages
+```
+
+# At risk
+
+All results from here on are in at risk patients.
+
+
+### Patient gender
+
+```{r, results='asis'}
+freq(at_risk$pt_sex, cumul=FALSE, report.nas = FALSE)
+```
+
+# SPICT 
+
+The SPICT score has a range from 0 to 6 and uses the following six variables:
+  
+  * Unplanned hospital admission
+* Performance status is poor or deteriorating
+* Depends on others for care
+* Progressive weight loss; remains under weight; low muscle mass
+* Persistent symptoms despite optimal treatment of underlying conditions
+* Patient (or family) asks for palliative care
+
+Each of the six variables contributes equally to the score. Unknown or missing values are assumed to be "No".
+
+### Correlation matrix of SPICT variables
+
+```{r spict.corr}
+# function to make yes/no into number
+z_makenum <- function(observed) {
+  result = ifelse(observed=='Yes', 1, 0)
+  return(result)
+}
+# estimate correlation matrix
+to.corr = select(at_risk, spict.vars) %>% # these are just yes/no/unknown
+  mutate_all(funs(z = z_makenum(.))) %>%
+  select(ends_with('_z')) %>%
+  rename_at(vars(ends_with("_z")),funs(str_replace(.,"_z","")))  # remove _z from name
+corr <- cor(to.corr, use = 'pairwise')
+colnames(corr) = row.names(corr) = nice.rename.spict(colnames(corr)) # rename
+# plot
+diag(corr) = NA # blank diagonals
+ggcorrplot(corr) 
+# for text around strongest correlation
+max.corr = max(corr[lower.tri(corr, diag=FALSE)])
+vars = which(corr==max.corr, arr.ind = T)
+```
+
+The plot shows the observed correlation between SPICT variables. Correlations for two variables range from -1 if they are perfectly negatively associated, to 0 if there is no association, to +1 if they are perfectly positively associated.
+
+The strongest positive correlation is `r round(max.corr,2)` between "`r row.names(vars)[1]`" and "`r row.names(vars)[2]`". There were no negative correlations.
+
+### Tables of SPICT variables
+
+```{r, results='asis'}
+## big summary table
+# create summary stats for table / plot
+spict = select(at_risk, "participant_id", all_of(spict.vars)) %>%
+  tidyr::gather(key='SPICT', value='Response', -`participant_id`) %>%
+  mutate(SPICT = nice.rename.spict(SPICT)) # neaten variable
+with(spict, ctable(SPICT, Response, dnn=c('SPICT',''), round.digits=0, useNA='no'))
+```
+
+
+### SPICT score
+
+```{r, fig.width=8, results='asis'}
+to.bar = group_by(at_risk, spict_score) %>%
+  summarise(count = n()) %>%
+  mutate(fill = as.factor(spict_score >= thresholds$spict_threshold))
+spict.bar = ggplot(data=to.bar, aes(x=spict_score, y=count, fill=fill))+ # colour bars by positive
+  xlab('SPICT score')+
+  ylab('Count')+
+  scale_x_continuous(breaks=0:6)+
+  geom_bar(stat='identity')+
+  scale_fill_manual(NULL, values=c('skyblue','dark blue'))+
+  g.theme+
+  theme(legend.position = 'none')
+spict.bar
+filename = paste('figures/all_sites_spict_bar', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(spict.bar)
+invisible(dev.off())
+```
+
+The darker blue bars show the SPICT-positive patients.
+
+## SPICT positive
+
+A patient is SPICT positive if their score is `r thresholds$spict_threshold` or greater.
+
+```{r, results='asis'}
+at_risk = mutate(at_risk, 
+                  `SPICT positive` = as.numeric(spict_score >= thresholds$spict_threshold),
+                  `SPICT positive` = factor(`SPICT positive`, levels=0:1, labels=c('No','Yes')))
+with(at_risk, freq(`SPICT positive`, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+## Common combinations for SPICT
+
+Here we show the most common combinations of symptoms for patients.
+
+```{r, fig.width=7}
+# get combinations of yes responses
+yes_responses <-  dplyr::select(at_risk, participant_id, spict.vars)  %>%
+  as_tibble() %>%
+  tidyr::gather(key='spict', value='response', -participant_id) %>%
+  filter(response=='Yes') %>% # just yes
+  select(-response) %>%
+  mutate(spict = nice.rename.spict(spict)  )
+# now make list from group responses
+list_resp = group_by(yes_responses, participant_id) %>%
+  summarise(spicts = list(spict))
+# add zeros
+all_ids = unique(at_risk$participant_id)
+missing.ids = all_ids[all_ids %in% list_resp$participant_id == FALSE]
+zeros = as_tibble(data.frame(participant_id=missing.ids))
+list_resp = bind_rows(list_resp, zeros)
+# plot
+cplot = ggplot(list_resp, aes(x = spicts)) +
+  geom_bar(aes(y=..count../sum(..count..)), fill = "indianred3") +
+  g.theme+
+  xlab("SPICT combinations") +
+  ylab("Proportion of patients") +
+  scale_x_upset(n_intersections = 20) # top twenty
+cplot
+# export to figure
+filename = paste('figures/all_sites_spict_upset', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(cplot)
+invisible(dev.off())
+```
+
+# CriSTAL 
+
+The CriSTAL score has a range in this study from 1 to 18. It uses the following 16 variables:
+  
+  * Age over 75 (_all patients in the InterACT study_)
+* Admitted via Emergency Department
+* Admitted From nursing home or supported accommodation
+* Previous hospitalisation in last 12 months
+* ICU admission
+* Clinical frailty score (two thresholds at 5+ and 7+)
+* Advanced cancer
+* Proteinuria
+* Chronic kidney disease
+* Abnormal ECG
+* Acute myocardial infarction
+* Chronic heart failure
+* COPD
+* Stroke
+* Cognitive impairment
+* Liver disease
+
+And 8 clinical criteria:
+  
+  * Decreased level of consciousness (LOC) Glasgow Coma Scale (GCS) decreased more than 2 compared with at_risk for this person
+* Systolic Blood Pressure less than 90 mmHg
+* Respiratory Rate less than 5 or greater than 30 bpm	
+* Pulse Rate less than 40 or greater than 140 bpm	
+* Oxygen required or oxygen saturation less than 90%	
+* Hypoglycaemia (BGL 1.0 to 4.0 mmol/L)
+* Repeat or prolonged seizures (any type) More than one in 24hrs (including prior to hospital admission) or duration greater than 5 min	
+* Low urine output (less than 15 ml/hr or less than 0.5 ml/kg/hr)	
+
+We use two thresholds for the clinical frailty score at 5 or more and 7 or more.
+
+### Correlation matrix of CriSTAL variables
+
+```{r cristal.corr, fig.width=7, fig.height=7}
+# function to make yes/no into number
+z_makenum <- function(observed) {
+  result = ifelse(observed=='Yes', 1, 0)
+  return(result)
+}
+# estimate correlation matrix
+to.corr = select(at_risk, cristal.vars) %>%
+  mutate_at(vars(!ends_with("_cfs_score")), funs(z = z_makenum(.))) %>% # only mutate binary variables
+  select(ends_with('_z'), 'cristal_cfs_score') %>%
+  rename_at(vars(ends_with("_z")), funs(str_replace(.,"_z",""))) # remove _z from name
+corr <- cor(to.corr, use = 'pairwise')
+colnames(corr) = row.names(corr) = nice.rename.cristal(colnames(corr)) # rename
+colnames(corr)[colnames(corr) == "Frailty score >= 6"] = 'Frailty score'
+row.names(corr)[row.names(corr) == "Frailty score >= 6"] = 'Frailty score'
+# plot
+diag(corr) = NA # blank diagonals
+ggcorrplot(corr, tl.cex=8) # cex to reduce text size
+# for text around strongest correlations
+max.corr = max(corr[lower.tri(corr, diag=FALSE)])
+vars.pos = which(corr==max.corr, arr.ind = T)
+min.corr = min(corr[lower.tri(corr, diag=FALSE)])
+vars.neg = which(corr==min.corr, arr.ind = T)
+```
+
+The plot shows the observed correlation between CRiSTAL variables. The strongest positive correlation is `r round(max.corr,2)` between "`r row.names(vars.pos)[1]`" and "`r row.names(vars.pos)[2]`". The strongest negative correlation is `r round(min.corr,2)` between "`r row.names(vars.neg)[1]`" and "`r row.names(vars.neg)[2]`". 
+
+The clinical frailty score is continuous, whereas the other variables are binary. To make the binary variables numeric, we group 'no' and 'unknown' together as zero, and compare them with 'yes' as one.
+
+We did not include age in the correlation plot as every patient is over 75.
+
+### Tables of CriSTAL variables
+
+```{r, results='asis'}
+## big summary table
+# create summary stats for table / plot
+cristal = select(at_risk, "participant_id", 'hospital', all_of(cristal.vars)) %>%
+  mutate(
+    #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary , no longer using age in cristal
+    cristal_cfs_score1 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold, 'Yes', 'No'), # frailty score over 5,
+    cristal_cfs_score2 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold2, 'Yes', 'No') # frailty score over 7,
+  ) %>% 
+  select(-cristal_cfs_score) %>% # no longer need score
+  mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
+  tidyr::gather(key='CRISTAL', value='Response', -`participant_id`, -`hospital`) %>%
+  mutate(CRISTAL = nice.rename.cristal(CRISTAL)) # neaten variable
+# 
+with(cristal, ctable(CRISTAL, Response, dnn=c('CriSTAL Variable',''), round.digits=0, useNA='no'))
+```
+
+### CriSTAL score
+
+```{r, fig.width=8}
+#
+MaxC = max(at_risk$cristal_score) # for x-axis limit
+#
+to.bar = group_by(at_risk, cristal_score) %>%
+  summarise(count = n()) %>%
+  mutate(fill = as.factor(cristal_score >= thresholds$cristal_threshold))
+cristal.bar = ggplot(data=to.bar, aes(x=cristal_score, y=count, fill=fill))+ # colour bars by positive
+  xlab('CriSTAL score')+
+  ylab('Count')+
+  scale_x_continuous(breaks=0:MaxC)+
+  geom_bar(stat='identity')+
+  scale_fill_manual(NULL, values=c('skyblue','dark blue'))+
+  g.theme+
+  theme(legend.position = 'none')
+filename = paste('figures/all_sites_cristal_bar', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(cristal.bar)
+invisible(dev.off())
+```
+
+The darker blue bars show the CriSTAL-positive patients with a score of `r thresholds$cristal_threshold` or greater. 
+
+
+### CriSTAL score summary statistics
+
+```{r, cristal.summary, results='asis'}
+descr(at_risk$cristal_score, stats = c('N.valid','mean','sd','min','med','max'), round.digits =1, transpose = TRUE)
+```
+
+### CriSTAL positive
+
+```{r, results='asis'}
+at_risk = mutate(at_risk, 
+                  `CriSTAL positive` = as.numeric(cristal_score >= thresholds$cristal_threshold),
+                  `CriSTAL positive` = factor(`CriSTAL positive`, levels=0:1, labels=c('No','Yes')))
+with(at_risk, freq(`CriSTAL positive`, round.digits=0, cumul = FALSE, report.nas =FALSE))
+```
+
+A CriSTAL positive score is `r thresholds$cristal_threshold` or above, and we apply this for the entire cohort.
+
+## Common combinations for CriSTAL 
+
+Here we show the twenty most common combinations of sign and symptoms for screened patients. 
+We do not show age over 75 in this plot, because everyone in our sample is over this age.
+If a CriSTAL variable is not shown, it means it was not used in any of the top twenty combinations.
+
+```{r, fig.width=8}
+# get combinations of yes responses
+yes_responses <-  dplyr::select(at_risk, participant_id, cristal.vars)  %>%
+  mutate(
+    #age = ifelse(age>=75, 'Yes', 'No'), # convert to binary - no longer using age in cristal
+    cristal_cfs_score1 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold, 'Yes', 'No'), # frailty score over 5
+    cristal_cfs_score2 = ifelse(cristal_cfs_score >= thresholds$frailty_threshold2, 'Yes', 'No')) %>%  # frailty score over 7
+  select(-cristal_cfs_score) %>% # no longer needed
+  mutate_if(is.factor, as.character) %>% # convert all yes/no factors to characters
+  as_tibble() %>%
+  tidyr::gather(key='cristal', value='response', -participant_id) %>%
+  filter(response=='Yes') %>% # just yes
+  select(-response) %>%
+  mutate(cristal = nice.rename.cristal(cristal)  )
+# now make list from group responses
+list_resp = group_by(yes_responses, participant_id) %>%
+  summarise(cristals = list(cristal))
+# add zeros
+all_ids = unique(at_risk$participant_id)
+missing.ids = all_ids[all_ids %in% list_resp$participant_id == FALSE]
+zeros = as_tibble(data.frame(participant_id=missing.ids))
+list_resp = bind_rows(list_resp, zeros)
+# plot
+# to do, colour bar by threshold?
+cplot = ggplot(list_resp, aes(x = cristals)) +
+  geom_bar(aes(y=..count../sum(..count..)), fill = "#6855CD") +
+  g.theme+
+  xlab("CriSTAL combinations") +
+  ylab("Proportion of patients") +
+  scale_x_upset(n_intersections = 20) # top twenty
+cplot
+# export to figure
+filename = paste('figures/all_sites_cristal_upset', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(cplot)
+invisible(dev.off())
+```
+
+### Frailty score
+
+The plot is split by CriSTAL/SPICT positive.
+
+```{r, out.width='100%', fig.width=7}
+p <- ggplot(filter(at_risk, !is.na(at_risk)), aes(x=factor(at_risk), y=cristal_cfs_score, fill=factor(at_risk))) + 
+  scale_fill_manual('', values=cbPalette)+
+  geom_violin(alpha=0.6, bw=2)+
+  geom_boxplot(width=0.1)+
+  xlab('')+
+  ylab('Clinical frailty score')+
+  g.theme+
+  theme(legend.position = 'none')
+p
+filename = paste('figures/all_sites_cfs', file_plus, '.jpg', sep='')
+jpeg(filename, width=5.5, height=4, quality = 100, res=500, units='in')
+print(p)
+invisible(dev.off())
+```

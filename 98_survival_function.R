@@ -18,14 +18,14 @@ make_survival_times = function(
                 'event' = as.character(change_var),
                 'outcome_date' = as.character(outcome_date),
                 'form_date' = as.character(form_date)) %>%
-    # if outcome time is missing '00:00' then set to the end of the day
+    # if outcome time is missing '00:00' then set to the end of the day (happened some time that day)
     mutate(is.missing = stringr::str_sub(outcome_date, 12, 16)=='00:00',
            outcome_date = as.character(outcome_date),
            outcome_date = ifelse(is.missing==TRUE, paste(str_sub(outcome_date, 1, 10), '23:59:00'), outcome_date),
            outcome_date = as.POSIXct(outcome_date)) %>%
     select(-is.missing) # no longer needed
   
-  ## get all key dates for one patient in a chain
+  ## get all key dates for one patient in a chain; assess 'prior' patients at the same time
   event_data = prior = all_events = NULL
   for (k in 1:nrow(indata)){
     this_id = indata$participant_id[k]
@@ -39,7 +39,7 @@ make_survival_times = function(
       left_join(date_changes_time, by='hospital') %>% # add date of intervention version with date/times
       select(-hospital) %>% # No longer needed
       pivot_longer(cols=contains('date'), names_to='event', values_to='datetime') %>% # all dates
-      mutate(datetime = datetime+1) # add one second to admission so that any events with same time as admission appear earlier
+      mutate(datetime = datetime+1) # add one second to admission so that any events with same time as admission appear earlier (prior)
     # discharge
     this_d = filter(complete, participant_id == this_id) %>%
       select(participant_id, redcap_version, hosp_discharge_date) %>%
@@ -47,7 +47,6 @@ make_survival_times = function(
              hosp_discharge_date = as.POSIXct(hosp_discharge_date, origin='1970-01-01', tz='Australia/Brisbane')) %>% # keep in date format
       pivot_longer(cols=contains('date'), names_to='event', values_to='datetime') # all dates (just one)
     ## outcome, ignore "Unknown" so they become like missing
-    #
     this_o = filter(form, participant_id == this_id) %>%
       mutate(event = as.character(event),
              datetime = ifelse(event=='No', form_date, outcome_date), # date used depends on outcome
@@ -66,7 +65,7 @@ make_survival_times = function(
                            time = 0.001,
                            event = 'Prior')
         prior = bind_rows(prior, frame) 
-        next 
+        next # can skip as prior added below
       }
     }
     # Prior if already known to palliative care at first visit
@@ -78,7 +77,7 @@ make_survival_times = function(
                          time = 0.001,
                          event='Prior')
       prior = bind_rows(prior, frame) 
-      next 
+      next # can skip as prior added below
     }
     # b) put all dates in a chain
     all_dates = bind_rows(this, this_d, this_o) %>%
@@ -94,22 +93,25 @@ make_survival_times = function(
              post_yes = cumsum(yes) - yes,
              post_discharge = cumsum(discharge) - discharge, # find days after discharge (excluding day of discharge)
              post_intervention = cumsum(change_over) - change_over) # find days after intervention 
-    # if "yes" is first date then patient is 'prior' and not suitable for survival analysis
-    # should possibly be any yes before admission
-    if(all_dates$event[1] =='Yes'){
-      frame = data.frame(participant_id = this_id, 
+    # if "yes" before admission then prior; just use first yes below
+    if(any(all_dates$event == 'Yes')){
+      if(which(all_dates$event=='Yes')[1] < which(all_dates$event=='admission_datetime')){
+        frame = data.frame(participant_id = this_id, 
                          redcap_version = this_redcap, 
                          datetime_1 = admission,
                          datetime_2 = admission,
                          time = 0.001,
                          event='Prior')
-      prior = bind_rows(prior, frame)
-      next 
+        prior = bind_rows(prior, frame)
+        next # can skip as prior added below
+      }
     }
-    all_dates = filter(all_dates, post_admission >=1, # remove any dates before admission
-                       post_yes <=0,  # remove any dates after first yes, this avoids creating patients with two Yes's
-                       post_discharge <=0,  # remove any dates after discharge
-                       post_follow_up <=0) %>% # remove any dates after end of follow-up
+    all_dates = filter(all_dates, 
+                       !participant_id %in% prior$participant_id, # not in prior
+                       post_admission >= 1, # remove any dates before admission
+                       post_yes <= 0,  # remove any dates after first yes, this avoids creating patients with two Yes's
+                       post_discharge <= 0,  # remove any dates after discharge
+                       post_follow_up <= 0) %>% # remove any dates after end of follow-up
       group_by(event) %>%
       arrange(event, desc(datetime)) %>% # oldest datetime first
       slice(1) %>% # if two or more No's in a row choose latest (works because there are no two No's in a row)
@@ -242,8 +244,23 @@ make_survival_times = function(
       select(-flag)
   }
   
+  # check for patients not in the survival data
+  ids_in = filter(form, 
+                  !is.na(outcome_date),
+                  int_time %in% c('Usual care','Intervention'),
+                  redcap_version ==3) %>% 
+    select(participant_id) %>% unique() %>% pull(participant_id)
+  ids_out = unique(to_export2$participant_id)
+  index = ids_in %in% ids_out == FALSE
+  not_in = NULL
+  if(any(index)){
+    not_in = ids_in[index]
+    cat("Warning ", sum(index), " patients not in survival data.\n", sep='')
+  }
+  
   # return
   to_return = list()
+  to_return$not_in = not_in
   to_return$version1 = to_export
   to_return$version2 = to_export2
   return(to_return) 

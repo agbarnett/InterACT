@@ -1,0 +1,713 @@
+---
+title: 'InterACT project: outcomes 4, 5 and 6 by team using survival plots'
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: false
+    reference_docx: rmarkdown-styles-reference.docx
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400, dev = "ragg_png")
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+source('99_functions.R')
+library(cmprsk) # for cumulative incidence
+library(dplyr)
+library(tidyr)
+library(janitor) # for tables with column totals
+library(stringr)
+library(flextable)
+
+# graphics things:
+library(ragg) # because of ribbon issue
+library(ggplot2)
+library(survminer) # for survival plots
+library(gridExtra)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7") # colour-blind palette
+pred_time = 21 # for right limit of plots
+
+# start with the unscrambled data
+source('1_not_scramble_data.R')
+
+# scramble intervention (turn off -- FALSE -- when ready)
+scramble = FALSE # 
+if(scramble == TRUE){
+  source('1_scramble_data.R')
+}
+
+# create small subset of variables to add to outcome data
+data_to_add = select(baseline, participant_id, pt_sex, age, team)
+```
+
+This report examines outcomes 4, 5 and 6 by team.
+
+
+# Clinician-led review discussion
+
+Here we use time-to-event analysis to examine the time to the first clinical-led discussion The plot below shows the cumulative probability for the first clinical-led discussion by intervention phase.
+
+```{r, include=FALSE}
+## prepare data for cumulative and instantaneous survival models
+# exclude prior:
+for_model_care_review = filter(survival_data,
+                  outcome == 'care_review',
+                  int_time != 'Establishment', # excluded from analysis
+                  event != 'Prior') %>%
+  mutate(  event = as.character(event), # needed for ifelse below
+           event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+
+# add variables from baseline data that are not in outcome data (age, sex)
+for_model_care_review = left_join(for_model_care_review, data_to_add, by='participant_id')
+
+## numbers excluded
+# a) establishment
+n_excluded_establishment = nrow(filter(survival_data, 
+                               outcome == 'care_review',
+                               int_time == 'Establishment'))
+# b) prior
+n_excluded_prior = nrow(filter(survival_data, 
+                               outcome == 'care_review',
+                               int_time != 'Establishment', # avoid double-counting of those excluded for this reason
+                               event == 'Prior'))
+```
+
+##### Cumulative probability plot (clinical-led discussion)
+
+```{r, include=FALSE}
+# cumulative probability plot
+# plot in each hospital - change after scrambling
+plot_data = NULL
+for (hosp in c('RBWH','TPCH','GCUH')){
+  teams = filter(for_model_care_review, hospital==hosp) %>% # get all teams
+    pull(team) %>%
+    unique()
+for (this_team in teams){
+  this_data = filter(for_model_care_review, hospital ==hosp, team==this_team) %>%
+    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+  cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
+  g = ggcompetingrisks(cum_inc,
+                       xlab = 'Days',
+                       ylab = 'Cumulative probability',
+                       multiple_panels = FALSE,
+                       title = '',
+                       cumcensor = TRUE, # does not work
+                       legend.title='',
+                       risk.table = TRUE, # does not work
+                       conf_int = TRUE) # does not work
+  # combine data
+  this_plot = mutate(g$data, hospital=hosp, team=this_team)
+  plot_data = bind_rows(plot_data, this_plot)
+} # end of team loop
+} # end of hospital loop
+# add CI
+to_plot = mutate(plot_data,
+                 z = qnorm(0.975),
+                 lower  = est - (z*sqrt(var)),
+                 upper  = est + (z*sqrt(var)),
+                 group = ifelse(group=='Usual', 'Usual care', group))
+```
+
+### RBWH
+
+```{r, fig.width=8, fig.height=7}
+rbwh = filter(to_plot, hospital=='RBWH')
+# redo plot for greater control
+alt_plot = ggplot(rbwh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,1)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.85, 0.15)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+### TPCH
+
+```{r, fig.width=8, fig.height=6}
+tpch = filter(to_plot, hospital=='TPCH')
+# redo plot for greater control
+alt_plot = ggplot(tpch, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,1)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.85, 0.15)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+### GCUH
+
+```{r, fig.width=8, fig.height=7}
+gcuh = filter(to_plot, hospital=='GCUH')
+# redo plot for greater control
+alt_plot = ggplot(gcuh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0, 0.8)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.9, 0.12)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+###### page break
+
+# Review of care directives documents
+
+The results in this section only use the first care directive per patient. For patients without a review, we used their final completed form.
+
+```{r, include=FALSE}
+## prepare data for cumulative and instantaneous survival models
+# exclude prior:
+for_model_care_directive = filter(survival_data,
+                  outcome == 'care_directive',
+                  int_time != 'Establishment', # excluded from analysis
+                  event != 'Prior') %>%
+  mutate(  event = as.character(event), # needed for ifelse below
+           event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+
+# add variables from baseline data
+for_model_care_directive = left_join(for_model_care_directive, data_to_add, by='participant_id')
+```
+
+```{r, include=FALSE}
+## cumulative probability plot
+# plot in each hospital - change after scrambling
+plot_data = NULL
+for (hosp in c('RBWH','TPCH','GCUH')){
+  teams = filter(for_model_care_directive, hospital==hosp) %>% # get all teams
+    pull(team) %>%
+    unique()
+for (this_team in teams){
+  this_data = filter(for_model_care_directive, hospital ==hosp, team==this_team) %>%
+    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+  cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
+  g = ggcompetingrisks(cum_inc,
+                       xlab = 'Days',
+                       ylab = 'Cumulative probability',
+                       multiple_panels = FALSE,
+                       title = '',
+                       cumcensor = TRUE, # does not work
+                       legend.title='',
+                       risk.table = TRUE, # does not work
+                       conf_int = TRUE) # does not work
+  # combine data
+  this_plot = mutate(g$data, hospital=hosp, team=this_team)
+  plot_data = bind_rows(plot_data, this_plot)
+}
+}
+# add CI
+to_plot = mutate(plot_data,
+                 z = qnorm(0.975),
+                 lower  = est - (z*sqrt(var)),
+                 upper  = est + (z*sqrt(var)),
+                 group = ifelse(group=='Usual', 'Usual care', group))
+```
+
+### RBWH
+
+```{r, fig.width=8, fig.height=7}
+rbwh = filter(to_plot, hospital=='RBWH')
+# redo plot for greater control
+alt_plot = ggplot(rbwh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,1)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.85, 0.15)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+### TPCH
+
+```{r, fig.width=8, fig.height=6}
+tpch = filter(to_plot, hospital=='TPCH')
+# redo plot for greater control
+alt_plot = ggplot(tpch, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0, 0.75)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.9, 0.12)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+### GCUH
+
+```{r, fig.width=8, fig.height=7}
+gcuh = filter(to_plot, hospital=='GCUH')
+# redo plot for greater control
+alt_plot = ggplot(gcuh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0, 0.8)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.9, 0.1)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+###### page break
+
+# Palliative care referral
+
+The results in this section only use the first palliative care referral per patient, or for patients without any referrals in their completed forms.
+
+```{r, include=FALSE}
+## prepare data for cumulative and instantaneous survival models
+# exclude prior:
+for_model_palliative = filter(survival_data,
+                  outcome == 'palliative_care_referral',
+                  int_time != 'Establishment', # excluded from analysis
+                  event != 'Prior') %>%
+  mutate(  event = as.character(event), # needed for ifelse below
+           event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
+
+# add variables from baseline data (age, sex)
+for_model_palliative = left_join(for_model_palliative, data_to_add, by='participant_id')
+```
+
+```{r, include=FALSE}
+## cumulative probability plot
+# plot in each hospital - change after scrambling
+plot_data = NULL
+for (hosp in c('RBWH','TPCH','GCUH')){
+  teams = filter(for_model_palliative, hospital==hosp) %>% # get all teams
+    pull(team) %>%
+    unique()
+for (this_team in teams){
+  this_data = filter(for_model_palliative, hospital ==hosp, team==this_team) %>%
+    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+  cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
+  g = ggcompetingrisks(cum_inc,
+                       xlab = 'Days',
+                       ylab = 'Cumulative probability',
+                       multiple_panels = FALSE,
+                       title = '',
+                       cumcensor = TRUE, # does not work
+                       legend.title='',
+                       risk.table = TRUE, # does not work
+                       conf_int = TRUE) # does not work
+  # combine data
+  this_plot = mutate(g$data, hospital=hosp, team=this_team)
+  plot_data = bind_rows(plot_data, this_plot)
+}
+}
+# add CI
+to_plot = mutate(plot_data,
+                 z = qnorm(0.975),
+                 lower  = est - (z*sqrt(var)),
+                 upper  = est + (z*sqrt(var)),
+                 group = ifelse(group=='Usual', 'Usual care', group))
+```
+
+### RBWH
+
+```{r, fig.width=8, fig.height=7}
+rbwh = filter(to_plot, hospital=='RBWH')
+# redo plot for greater control
+alt_plot = ggplot(rbwh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,0.6)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.85, 0.15)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+### TPCH
+
+```{r, fig.width=8, fig.height=6}
+tpch = filter(to_plot, hospital=='TPCH')
+# redo plot for greater control
+alt_plot = ggplot(tpch, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,0.3)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.15, 0.9)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+### GCUH
+
+```{r, fig.width=8, fig.height=7}
+gcuh = filter(to_plot, hospital=='GCUH')
+# redo plot for greater control
+alt_plot = ggplot(gcuh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,0.5)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.15, 0.8)) +
+  facet_wrap(~team)
+alt_plot
+```
+
+# Calendar time scale in the time-to-event analyses
+
+Below we use calendar time for the survival analyses. This is useful for spotting what times there were relative increases or decreases in the 4, 5, 6 outcomes.
+
+```{r make_times, include=FALSE}
+### make the intervention times on a calendar time
+# starting date/time (usual care)
+ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz='Australia/Brisbane')
+ref_datetime = as.numeric(ref_datetime)
+# intervention times
+load('data/date_changes.RData') # from 0_date_changes.R
+date_changes = mutate(date_changes, hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+lines = select(date_changes, hospital, hosp_ordered, date_intervention) %>%
+  mutate(line = as.POSIXct(date_intervention, tz='Australia/Brisbane'),
+         line = as.numeric(line),
+         time = (line - ref_datetime)/(60*60*24)) # difference from starting date
+# add all teams to lines
+all_teams = select(baseline, hospital, team) %>% unique()
+lines = left_join(lines, all_teams, by='hospital')
+# subtract 28 days from intervention time to remove 4 week establishment phase prior to intervention
+lines = mutate(lines, time = time - 28)
+```
+
+## a) Time to clinician-led care review discussion
+
+```{r}
+# put data on alternative time scale 
+calendar_time_care_review = calendar_time(indata=for_model_care_review, changes=date_changes) # see 99_functions.R
+
+diff_plots = NULL
+for (hosp in c('TPCH','RBWH','GCUH')){
+  
+  # loop through teams
+  teams = filter(for_model_care_review, hospital==hosp) %>% # get all teams
+    pull(team) %>%
+    unique()
+  
+  for (this_team in teams){
+    # run Cox model
+    cox_model_care_review_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex, data = filter(calendar_time_care_review, hospital == hosp, team==this_team))
+    #
+    base = basehaz(cox_model_care_review_calendar, centered=TRUE) %>%
+      mutate(hospital = hosp)
+    # make data for difference plot:
+    diff_plot = base_haz_difference(inbase = base)  %>%
+      mutate(team = this_team)
+    diff_plots = bind_rows(diff_plots, diff_plot)
+    
+  }
+}
+```
+
+### i) TPCH
+
+```{r, fig.width=8}
+# get ticks
+ticks = x_ticks(Hospital='TPCH', 
+                tick_dates = c('2020-05-25','2020-10-13','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='TPCH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='TPCH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+### ii) RBWH
+
+```{r, fig.width=8, fig.height=8}
+# get ticks
+ticks = x_ticks(Hospital='RBWH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-15','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='RBWH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='RBWH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+### iii) GCUH
+
+```{r, fig.width=8, fig.height=6}
+# get ticks
+ticks = x_ticks(Hospital='GCUH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-02-16','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='GCUH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='GCUH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+
+
+## b) Time to care directives documents
+
+```{r}
+# put data on alternative time scale 
+calendar_time_care_directive = calendar_time(indata=for_model_care_directive, changes=date_changes) # see 99_functions.R
+
+diff_plots = NULL
+for (hosp in c('TPCH','RBWH','GCUH')){
+  
+  # loop through teams
+  teams = filter(calendar_time_care_directive, hospital==hosp) %>% # get all teams
+    pull(team) %>%
+    unique()
+  
+  for (this_team in teams){
+    # run Cox model
+    cox_model_care_directive_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex, data = filter(calendar_time_care_directive, hospital == hosp, team==this_team))
+    #
+    base = basehaz(cox_model_care_directive_calendar, centered=TRUE) %>%
+      mutate(hospital = hosp)
+    # make data for difference plot:
+    diff_plot = base_haz_difference(inbase = base)  %>%
+      mutate(team = this_team)
+    diff_plots = bind_rows(diff_plots, diff_plot)
+    
+  }
+}
+```
+
+### i) TPCH
+
+```{r, fig.width=8}
+# get ticks
+ticks = x_ticks(Hospital='TPCH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='TPCH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='TPCH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+
+### ii) RBWH
+
+```{r, fig.width=8, fig.height=8}
+# get ticks
+ticks = x_ticks(Hospital='RBWH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='RBWH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='RBWH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+### iii) GCUH
+
+```{r, fig.width=8, fig.height=6}
+# get ticks
+ticks = x_ticks(Hospital='GCUH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='GCUH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='GCUH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+## c) Time to palliative care referral
+
+```{r}
+# put data on alternative time scale 
+calendar_time_palliative = calendar_time(indata=for_model_palliative, changes=date_changes) # see 99_functions.R
+
+diff_plots = NULL
+for (hosp in c('TPCH','RBWH','GCUH')){
+  
+  # loop through teams
+  teams = filter(calendar_time_palliative, hospital==hosp) %>% # get all teams
+    pull(team) %>%
+    unique()
+  
+  for (this_team in teams){
+    # run Cox model
+    cox_model_palliative_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex, data = filter(calendar_time_palliative, hospital == hosp, team==this_team))
+    #
+    base = basehaz(cox_model_palliative_calendar, centered=TRUE) %>%
+      mutate(hospital = hosp)
+    # make data for difference plot:
+    diff_plot = base_haz_difference(inbase = base)  %>%
+      mutate(team = this_team)
+    diff_plots = bind_rows(diff_plots, diff_plot)
+    
+  }
+}
+```
+
+### i) TPCH
+
+```{r, fig.width=8}
+# get ticks
+ticks = x_ticks(Hospital='TPCH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='TPCH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='TPCH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+
+### ii) RBWH
+
+```{r, fig.width=8, fig.height=8}
+# get ticks
+ticks = x_ticks(Hospital='RBWH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='RBWH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='RBWH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```
+
+### iii) GCUH
+
+```{r, fig.width=8, fig.height=6}
+# get ticks
+ticks = x_ticks(Hospital='GCUH', 
+                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+                date_changes = date_changes)
+# plot
+bplot = ggplot(data=filter(diff_plots, hospital=='GCUH'), aes(x=time, y=diff, col=team)) +
+  geom_vline(data=filter(lines, hospital=='GCUH'), aes(xintercept=time), lty=2) + # vertical reference line at change
+  geom_line() +
+  geom_hline(yintercept=0, col='grey33', lty=3)+
+  scale_color_manual(NULL, values=cbPalette) +
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+  xlab('Calendar time') +
+  ylab('Cumulative hazard difference') +
+  facet_wrap(~team, scales='free_y') +
+  g.theme+
+  theme(legend.position='none',
+        axis.text.x = element_text(angle = 45, hjust=1))
+bplot
+```

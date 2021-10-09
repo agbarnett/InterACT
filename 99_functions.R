@@ -1,6 +1,6 @@
 # 99_functions.R
 # helpful functions for InterACT
-# July 2021
+# September 2021
 
 # date formating
 my.date.format = function(x){y= format(x, "%d %b %Y"); return(y)} 
@@ -485,24 +485,18 @@ weekend_time = function(indata){
   return(long_data)
 }
 
-
 ### make survival data using calendar time
 calendar_time = function(indata, changes){
   # start of usual care (start time in all three hospitals)
   ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz='Australia/Brisbane')
   ref_datetime = as.numeric(ref_datetime)
   
-  # remove establishment phase (added August 2021) - need to adjust back before plotting
-  changes = select(changes, hospital, date_intervention) # slim down
-  outdata = left_join(indata, changes, by='hospital') %>%
-    mutate(index = ifelse(as.Date(datetime_1) >= date_intervention, 1, 0),
-           datetime_1 = ifelse(index==1, datetime_1 - (28 * 60*60*24), datetime_1 ), # knock off four weeks (establishment) to avoid gap; original data on date/time scale
-           datetime_2 = ifelse(index==1, datetime_2 - (28 * 60*60*24), datetime_2 ))
-  
   # calculate difference from usual care date/time (after adjusting for establishment)
-  outdata = mutate(outdata, 
+  outdata = mutate(indata, 
+                   #event = ifelse(event=='Prior', 'Yes', event), # prior count as yes - turned off for proportion plot
                    start = (as.numeric(datetime_1) - ref_datetime)/(60*60*24),
-                   end = (as.numeric(datetime_2) - ref_datetime)/(60*60*24))
+                   end = (as.numeric(datetime_2) - ref_datetime)/(60*60*24),
+                   end = ifelse(start==end, end+0.001, end)) # avoid ties
     
   #
   return(outdata)
@@ -520,7 +514,68 @@ e_dates = function(changes){
   
 
 ## function to calculate risk difference for survival models, with bootstrap CIs
-risk_diff = function(
+risk_diff_crr = function(
+  indata = NULL,
+  dp = 2, # decimal places
+  B = 100, # number of boostrap statistics
+  pred_time = 0 # time to predict difference at
+){
+  
+  # prepare data
+  indata = mutate(indata, 
+                  event = ifelse(event=='Prior', 'Yes', event), # prior count as events at early time
+                  eventSimple = ifelse(event!='Yes', 'Censored', 'Yes'),
+                  teamf = as.numeric(as.factor(team))) # everything not yes is censored
+  # make covariate matrix (fixed variables)
+  cov1 = select(indata, int_time_n, age, pt_sex, cristal_score, spict_score) %>%
+    mutate(age = (age - 84) / 5,
+           pt_sex = as.numeric(pt_sex == 'Female'),
+           cristal_score = cristal_score - 5,
+           spict_score = spict_score - 3) %>%
+    as.matrix()
+  # fit cumulative model
+  crr_model = with(indata, crr(ftime=time, fstatus=eventSimple, cov1 = cov1, cengroup=teamf, failcode='Yes', cencode='Censored'))
+  # predictions at centred values (see above)
+  pred_data = as.matrix(data.frame(int_time_n=c(0,1), age=0, pt_sex=0, cristal_score=0, spict_score=0))
+  pred_sur = predict(crr_model, cov1=pred_data)
+  # time just before prediction time
+  index = max(which(pred_sur[,1] - pred_time < 0)) 
+  pred_sur = pred_sur[index,2:3] # just take cumulative probabilities
+  diff = pred_sur[2] - pred_sur[1] # intervention minus usual care
+  pred_sur = c(pred_sur, diff)
+
+  # bootstrap intervals
+  boots <- boot(data = indata,
+                cov = cov1,
+                statistic = rdnnt_crr, # see other function
+                R = B, # number of bootstraps
+                pred_time = pred_time,
+                pred_data = pred_data)
+  # intervals for ...
+  ci1 = boot.ci(boots, conf=0.95, type= 'norm', index=1)  # ... intervention
+  ci1 = as.numeric(ci1$normal[2:3]) # just extract CIs
+  ci2 = boot.ci(boots, conf=0.95, type= 'norm', index=2)  # ... usual care
+  ci2 = as.numeric(ci2$normal[2:3]) # just extract CIs
+  ci3 = boot.ci(boots, conf=0.95, type= 'norm', index=3)  # ... difference
+  ci3 = as.numeric(ci3$normal[2:3]) # just extract CIs
+  ci = data.frame(rbind(ci1, ci2, ci3))
+  names(ci) = c('lower','upper')
+  #
+  preds = data.frame(Phase = c('Usual care','Intervention','Difference'),
+                     Event = pred_sur) %>%
+    bind_cols(ci) %>%
+    mutate(
+      Event = roundz(Event, dp), # 
+      lower = roundz(lower, dp),
+      upper = roundz(upper, dp),
+      CI = paste(lower, ' to ', upper, sep='')) %>%
+    select(Phase, Event, CI)
+  rownames(preds) = NULL
+  return(preds)
+}
+
+## function to calculate risk difference for survival models, with bootstrap CIs
+risk_diff_cox = function(
   indata = NULL,
   inmodel = NULL, # survival model, used to get formula
   dp = 2, # decimal places
@@ -537,9 +592,8 @@ risk_diff = function(
   old = 'I\\(int_time == \"Intervention\"\\)'
   char_formula = str_replace(char_formula, pattern=old, replacement = 'int_time_n')
   new_formula = str_replace(string=char_formula[2], pattern='strata', replacement='strat')
+  # crr does not allow strata
   #paste(c(char_formula[2], '~', str_replace(string=char_formula[3], pattern='strata', replacement='strat')), collapse=' ') # rms uses strat no strata
-  # fit cumulative model
-  #crr_model =   
   # refit Cox model using rms package
   cox_rms = cph(as.formula(new_formula), data = indata, surv=TRUE, x=TRUE, y=TRUE)
   # set up predictions, age at median, female, largest team
@@ -547,7 +601,7 @@ risk_diff = function(
   pred_sur = survest(cox_rms, newdata=pred_data, times=pred_time)
   # bootstrap intervals
   boots <- boot(data = indata,
-                  statistic = rdnnt, # see other function
+                  statistic = rdnnt_cox, # see other function
                   R = B, # number of bootstraps
                   frm = as.formula(new_formula),
                   pred_time = pred_time,
@@ -571,9 +625,32 @@ risk_diff = function(
   return(to_table)
 }
 
+## function for bootstrap confidence intervals for absolute risk difference in cumulative models
+# adapted from https://atm.amegroups.com/article/viewFile/18926/pdf
+rdnnt_crr <- function(data, 
+                      cov, # covariate matrix
+                  ii, 
+                  pred_time, # time to predict at
+                  pred_data) # data frame for predictions
+{
+  dd <- data[ii,]; # allows boot to select a sample
+  cc <- cov[ii,]; # allows boot to select a sample
+  
+  # fit cumulative model
+  crr_model = with(dd, crr(ftime=time, fstatus=eventSimple, cov1 = cc, cengroup=teamf, failcode='Yes', cencode='Censored'))
+  # predictions at centred values (see above)
+  pred_sur = predict(crr_model, cov1=pred_data)
+  # time just before prediction time
+  index = max(which(pred_sur[,1] - pred_time < 0)) 
+  pred_sur = pred_sur[index,2:3] # just take cumulative probabilities
+  diff = pred_sur[2] - pred_sur[1] # intervention minus usual care
+  pred_sur = c(pred_sur, diff) # add difference
+  return(pred_sur);
+}
+
 ## function for bootstrap confidence intervals for absolute risk difference in Cox model
 # adapted from https://atm.amegroups.com/article/viewFile/18926/pdf
-rdnnt <- function(data, 
+rdnnt_cox <- function(data, 
                   ii, 
                   frm, # formula 
                   pred_time, # time to predict at
@@ -652,14 +729,14 @@ cox_model_sensitivity_cph = cph(Surv(time = time, event = event== 'Yes') ~ age5 
 preds1 = Predict(cox_model_sensitivity_cph, 
                  age5 = 0, # 75
                  pt_sex = 'Female',
-                 int_time_n = c(1,2),
+                 int_time_n = c(0,1),
                  cristal_score = c(0,1), # one unit increase from median
                  spict_score = 0, # median
                  fun = exp) # for HR
 preds2 = Predict(cox_model_sensitivity_cph, 
                  age5 = 0, # 75
                  pt_sex = 'Female',
-                 int_time_n = c(1,2),
+                 int_time_n = c(0,1),
                  cristal_score = 0, # median
                  spict_score = c(0,1), # one unit increase from median
                  fun = exp) # for HR
@@ -683,7 +760,7 @@ gplot = ggplot(data=for_plot, aes(x=int_time_n, y=yhat, ymin=lower, ymax=upper, 
   geom_errorbar(width=0, size=1.05)+
   geom_line(size=1.05) +
   scale_color_manual('SPICT or CriSTAL score', values=palette, labels=c('Median', 'Median + 1')) +
-  scale_x_continuous(breaks=c(1,2), labels=c('Usual\ncare','Intervention'))+
+  scale_x_continuous(breaks=c(0,1), labels=c('Usual\ncare','Intervention'))+
   ylab('Hazard ratio') +
   xlab('')+
   g.theme +
@@ -733,7 +810,7 @@ base_haz_difference = function(inbase){
            diff = hazard - lag(hazard),
            delta = diff/tdiff) %>% 
     filter(!is.na(tdiff)) %>%
-    select(hospital, hstart, tstart, delta) 
+    dplyr::select(hospital, hstart, tstart, delta) 
   #
   diff = full_join(inbase, startend, by=c('hospital')) %>%
     group_by(hospital) %>%
@@ -742,3 +819,27 @@ base_haz_difference = function(inbase){
            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
   return(diff)
 }
+
+### make calendar time ticks for hospital dependent on date changes
+x_ticks = function(
+  Hospital,
+  tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
+  date_changes = date_changes){
+  # 
+  x_ticks = as.Date(tick_dates)
+  # check if in period establishment to intervention
+  dates = filter(date_changes, hospital == Hospital)
+  index = x_ticks>= dates$date_establishment & x_ticks <= dates$date_intervention  
+  x_ticks = x_ticks[!index] # remove those in this 4 week period
+  # nice labels (prior to any day subtraction)
+  x_labels = str_squish(format(x_ticks, '%e %b %Y'))
+  # days since start
+  x_ticks_days = as.numeric(x_ticks - dates$date_usual_care[1])
+  # subtract 28 days if after intervention  
+  index = x_ticks > dates$date_intervention  
+  x_ticks_days[index] = x_ticks_days[index] - 28
+  # return
+  to_return = data.frame(ticks = x_ticks_days, labels=x_labels)
+  return(to_return)
+} # end of function
+

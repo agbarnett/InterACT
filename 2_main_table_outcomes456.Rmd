@@ -1,0 +1,40 @@
+---
+title: 'Main table for outcomes 4,5,6 paper'
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: false
+    reference_docx: rmarkdown-styles-reference.docx
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400, dev = "ragg_png")
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(dplyr)
+library(tidyr)
+library(flextable)
+library(janitor)
+source('99_blind_hospital.R')
+
+# get regression results from 2_interact_summary_456.Rmd
+load('results/regression_data.RData')
+
+# blind_hospital
+all_ests_cox_care_directive = mutate(all_ests_cox_care_directive, 
+                                hosp_blinded = blind(hospital))
+     all_ests_cox_care_review = mutate(all_ests_cox_care_review, 
+                                hosp_blinded = blind(hospital))
+     all_ests_cox_palliative = mutate(all_ests_cox_palliative, 
+                                hosp_blinded = blind(hospital))
+     all_diffs_care_directive = mutate(all_diffs_care_directive, 
+                                hosp_blinded = blind(hospital))
+     all_diffs_care_review = mutate(all_diffs_care_review, 
+                                hosp_blinded = blind(hospital))
+     all_diffs_palliative = mutate(all_diffs_palliative, 
+                                hosp_blinded = blind(hospital))
+
+```
+

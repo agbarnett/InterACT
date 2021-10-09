@@ -1,0 +1,215 @@
+---
+title: 'Baseline table for outcomes 4,5,6 paper'
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    toc: false
+    reference_docx: rmarkdown-styles-reference.docx
+---
+
+```{r setup, include=FALSE}
+# using formatting in Word document (see above)
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400, dev = "ragg_png")
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(dplyr)
+library(tidyr)
+library(flextable)
+library(janitor)
+source('99_blind_hospital.R')
+
+load('data/FullData_imputed.RData')
+baseline = filter(baseline, redcap_version ==3,
+                  int_time != 'Establishment') %>%
+           mutate(int_time  = droplevels(int_time))
+
+# start with the unscrambled data
+#source('1_not_scramble_data.R')
+```
+
+# Version without phase but with hospital
+
+```{r}
+# first row = N screened
+r1 = group_by(baseline, hospital) %>% 
+  tally() %>%
+  adorn_totals('row') %>%
+  mutate(
+    var = 'Patients screened',
+    n = as.character(n)) %>% # for later binding
+  pivot_wider(names_from='hospital', values_from = `n`)
+# second row, at risk
+r2 = tabyl(baseline, hospital, at_risk) %>%
+  adorn_totals('row') %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 0) %>%
+  adorn_ns(position = 'front') %>%
+  select(hospital, `At risk`) %>%
+  pivot_wider(names_from='hospital', values_from = `At risk`) %>%
+  mutate(var = 'At risk')
+# third row, gender for at risk
+r3 = filter(baseline, at_risk =='At risk') %>%
+  tabyl(hospital, pt_sex) %>%
+  adorn_totals('row') %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 0) %>%
+  adorn_ns(position = 'front') %>%
+  select(hospital, Female) %>%
+  pivot_wider(names_from='hospital', values_from = `Female`) %>%
+  mutate(var = 'Female')
+## fourth row, age for at risk
+r4 = filter(baseline, at_risk =='At risk') %>%
+  group_by(hospital) %>%
+  summarise(m = median(age),
+            q1 = quantile(age, 0.25),
+            q3 = quantile(age, 0.75)) %>%
+  mutate(cell = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(hospital, cell) %>%
+  pivot_wider(names_from='hospital', values_from = `cell`) %>%
+  mutate(var = 'Age')
+# total
+r4t = filter(baseline, at_risk =='At risk') %>%
+  summarise(m = median(age),
+            q1 = quantile(age, 0.25),
+            q3 = quantile(age, 0.75)) %>%
+  mutate(Total = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(Total)
+r4 = bind_cols(r4, r4t) 
+# fifth row, CriSTAL for at risk
+r5 = filter(baseline, at_risk =='At risk') %>%
+  group_by(hospital) %>%
+  summarise(m = median(cristal_score),
+            q1 = quantile(cristal_score, 0.25),
+            q3 = quantile(cristal_score, 0.75)) %>%
+  mutate(cell = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(hospital, cell) %>%
+  pivot_wider(names_from='hospital', values_from = `cell`) %>%
+  mutate(var = 'CriSTAL')
+# total
+r5t = filter(baseline, at_risk =='At risk') %>%
+  summarise(m = median(cristal_score),
+            q1 = quantile(cristal_score, 0.25),
+            q3 = quantile(cristal_score, 0.75)) %>%
+  mutate(Total = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(Total)
+r5 = bind_cols(r5, r5t) 
+# sixth row, spict for at risk
+r6 = filter(baseline, at_risk =='At risk') %>%
+  group_by(hospital) %>%
+  summarise(m = median(spict_score),
+            q1 = quantile(spict_score, 0.25),
+            q3 = quantile(spict_score, 0.75)) %>%
+  mutate(cell = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(hospital, cell) %>%
+  pivot_wider(names_from='hospital', values_from = `cell`) %>%
+  mutate(var = 'SPICT')
+# total
+r6t = filter(baseline, at_risk =='At risk') %>%
+  summarise(m = median(spict_score),
+            q1 = quantile(spict_score, 0.25),
+            q3 = quantile(spict_score, 0.75)) %>%
+  mutate(Total = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(Total)
+r6 = bind_cols(r6, r6t) 
+# 
+tab = bind_rows(r1, r2, r3, r4, r5, r6) %>%
+  select(var, everything())
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Version with phase but no hospital
+
+```{r}
+# first row = N screened
+r1 = group_by(baseline, int_time) %>% 
+  tally() %>%
+  adorn_totals('row') %>%
+  mutate(
+    var = 'Patients screened',
+    n = as.character(n)) %>% # for later binding
+  pivot_wider(names_from='int_time', values_from = `n`)
+# second row, at risk
+r2 = tabyl(baseline, int_time, at_risk) %>%
+  adorn_totals('row') %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 0) %>%
+  adorn_ns(position = 'front') %>%
+  select(int_time, `At risk`) %>%
+  pivot_wider(names_from='int_time', values_from = `At risk`) %>%
+  mutate(var = 'At risk')
+# third row, gender for at risk
+r3 = filter(baseline, at_risk =='At risk') %>%
+  tabyl(int_time, pt_sex) %>%
+  adorn_totals('row') %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 0) %>%
+  adorn_ns(position = 'front') %>%
+  select(int_time, Female) %>%
+  pivot_wider(names_from='int_time', values_from = `Female`) %>%
+  mutate(var = 'Female')
+## fourth row, age for at risk
+r4 = filter(baseline, at_risk =='At risk') %>%
+  group_by(int_time) %>%
+  summarise(m = median(age),
+            q1 = quantile(age, 0.25),
+            q3 = quantile(age, 0.75)) %>%
+  mutate(cell = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(int_time, cell) %>%
+  pivot_wider(names_from='int_time', values_from = `cell`) %>%
+  mutate(var = 'Age')
+# total
+r4t = filter(baseline, at_risk =='At risk') %>%
+  summarise(m = median(age),
+            q1 = quantile(age, 0.25),
+            q3 = quantile(age, 0.75)) %>%
+  mutate(Total = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(Total)
+r4 = bind_cols(r4, r4t) 
+# fifth row, CriSTAL for at risk
+r5 = filter(baseline, at_risk =='At risk') %>%
+  group_by(int_time) %>%
+  summarise(m = median(cristal_score),
+            q1 = quantile(cristal_score, 0.25),
+            q3 = quantile(cristal_score, 0.75)) %>%
+  mutate(cell = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(int_time, cell) %>%
+  pivot_wider(names_from='int_time', values_from = `cell`) %>%
+  mutate(var = 'CriSTAL')
+# total
+r5t = filter(baseline, at_risk =='At risk') %>%
+  summarise(m = median(cristal_score),
+            q1 = quantile(cristal_score, 0.25),
+            q3 = quantile(cristal_score, 0.75)) %>%
+  mutate(Total = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(Total)
+r5 = bind_cols(r5, r5t) 
+# sixth row, spict for at risk
+r6 = filter(baseline, at_risk =='At risk') %>%
+  group_by(int_time) %>%
+  summarise(m = median(spict_score),
+            q1 = quantile(spict_score, 0.25),
+            q3 = quantile(spict_score, 0.75)) %>%
+  mutate(cell = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(int_time, cell) %>%
+  pivot_wider(names_from='int_time', values_from = `cell`) %>%
+  mutate(var = 'SPICT')
+# total
+r6t = filter(baseline, at_risk =='At risk') %>%
+  summarise(m = median(spict_score),
+            q1 = quantile(spict_score, 0.25),
+            q3 = quantile(spict_score, 0.75)) %>%
+  mutate(Total = paste(m, ' (', q1, ' to ', q3, ')', sep='')) %>%
+  select(Total)
+r6 = bind_cols(r6, r6t) 
+# 
+tab = bind_rows(r1, r2, r3, r4, r5, r6) %>%
+  select(var, everything())
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```

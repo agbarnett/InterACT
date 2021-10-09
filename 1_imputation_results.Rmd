@@ -1,0 +1,146 @@
+---
+title: InterACT - Multiple imputation model for missing ARP
+author: Adrian Barnett
+output: pdf_document
+geometry: margin=2cm
+---
+
+\fontfamily{cmss}
+\pagestyle{empty} 
+\setlength{\parindent}{5mm}
+
+
+```{r, echo=FALSE, include=FALSE}
+###
+### Called from 1_impute_arp.R
+###
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(dplyr.summarise.inform=FALSE) # drop annoying groups warning
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+
+## Section 0: basics ##
+library(dplyr)
+library(janitor)
+library(tidyr)
+library(stringr)
+library(flextable) # for nice tables
+# graphics
+library(ggplot2)
+theme_set(theme_bw())
+
+## summarise beta parameters from WinBUGS
+all_stats = reshape2::melt(bugs$sims.matrix) %>%
+  group_by(Var2) %>%
+  summarise(n = n(),
+            mean = mean(value),
+            median = median(value),
+            lower = quantile(value, 0.025),
+            upper = quantile(value, 1 - 0.025)) %>%
+  ungroup() %>%
+  mutate(Var2 = as.character(Var2),
+         strip = str_remove_all(Var2, '[^0-9|,]'),
+         nicevar = case_when(
+           str_detect(Var2, '^tau')  ~ 'Intercept precision',
+           str_detect(Var2, '^gamma_c')  ~ 'Random intercept',
+           str_detect(Var2, '^alpha') ~ 'Intercept',
+           str_detect(Var2, '^beta') ~ 'Slopes')
+  ) %>%
+  filter(Var2 != 'gamma') %>% # using centred version
+  separate(col=strip, into=c('category','predictor'), sep=',', convert=TRUE) %>% # split on comma, can ignore warnings
+  rename('Variable' = 'Var2')
+```
+
+We used a multinomial model to impute the missing ARP which has three categories of: Yes, valid; Yes, invalid; No. We fitted a multinomial model in a Bayesian paradigm. The equations are:
+
+$$Y_{i} \sim \textrm{Multinomial}(p_{i,j}), \qquad i=1,\ldots,N, \, j=1,2,3,$$
+$$p_{i,j} = \pi_{i,j} / \sum_{j=1}^3 \pi_{i,j} ,$$
+$$\log(p_{i,j}) = \alpha_j + \gamma_{j,\textrm{team}(i)}  + \sum_{r=1}^4 X_{i,r} \beta_{j,r}$$
+
+Where $\textbf{X}$ is a matrix of patient characteristics that were: age, gender, CRiSTAL score and SPICT score. These variables have no missing data and we hypothesised they would be associated with ARP. 
+
+The model included random intercepts per team:
+
+$$\gamma_{j,\textrm{team}(i)} \sim N(0, \sigma^{-2}_{\gamma,j})$$
+
+These intercepts were important as we expected the rates of completed ARPs to vary by team.
+
+To ensure identifiability we set:
+$$\alpha_1 = 0; \, \beta_{1,r} = 0 \, \forall\, r; \, \gamma_{1,t} = 0 \, \forall\, t $$.
+
+We used vague priors for all parameters:
+$$\alpha_j \sim N(0, 10^5), \forall\, j$$,
+$$\beta_{j,r} \sim N(0, 10^5), \forall\, j,r$$,
+$$\sigma^{-2}_{\gamma,j} \sim \textrm{Gamma}(0.1, 0.1), \, j=1,2$$.
+
+We used the WinBUGS software (version 1.4.3). We used `r MCMC` samples after the same sized burn-in. Samples were thinned by `r thin`.
+
+# Number and percent of ARP missing by hospital
+
+```{r}
+tab = filter(for_imputation) %>% 
+      mutate(missing = as.numeric(is.na(existing_arp)),
+             missing = factor(missing, levels=0:1, labels=c('No','Yes'))) %>%
+  tabyl(hospital, missing) %>%
+  adorn_totals() %>%
+  adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 0) %>%
+  adorn_ns()
+
+#  adorn_percentages('col')
+ftab = flextable(tab) %>% 
+    theme_box() %>%
+    autofit()
+ftab
+```
+
+The most amount of missing was at RBWH.
+
+# Table of estimates from the WinBUGS model
+
+The table below shows the estimates from the regression model used to impute ARP. The results are the odds ratio and 95% credible interval.
+
+```{r}
+alpha_beta = filter(all_stats, str_detect('beta', string=Variable)) %>%
+  mutate(Predictor = case_when(
+    predictor == 1 ~ 'Age (+5 years)',
+    predictor == 2 ~ 'Gender = Female',
+    predictor == 3 ~ 'CRiSTAL',
+    predictor == 4 ~ 'SPICT'
+  ),
+  Category = ifelse(category==2, "Yes, invalid", "No"),
+  mean = exp(mean),
+  lower = exp(lower),
+  upper = exp(upper)) %>%
+  select(Predictor, Category, mean, lower, upper)
+ftab = flextable(alpha_beta) %>% 
+    theme_box() %>%
+    autofit() %>%
+  colformat_double(digits=2)
+ftab
+```    
+
+Older age and higher CRiSTAL or SPICT scores were all associated with a reduced odds of no ARP.
+
+# Plot of random intercepts per team
+
+```{r}
+to_plot = filter(all_stats, str_detect('^gamma_c', string=Variable)) %>%
+  mutate(category_nice = ifelse(category==2, "Yes, invalid", "No"))
+rplot = ggplot(to_plot, aes(x=predictor, y=exp(mean), ymin=exp(lower), ymax=exp(upper)))+
+  scale_x_continuous(breaks=1:T, labels=NULL)+
+  scale_y_log10(breaks=c(0.25,0.5,1,2,6))+
+  geom_hline(lty=2, yintercept = 1)+
+  geom_point()+
+  geom_errorbar(width=0)+
+  theme_bw()+
+  xlab('Team')+
+  ylab('Random intercept (odds)')+
+  facet_wrap(~category_nice)+
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank())
+rplot
+```    
+
+The plot shows the mean and 95% credible interval per team. There were `r T` teams.
