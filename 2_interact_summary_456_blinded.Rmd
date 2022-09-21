@@ -1,5 +1,5 @@
 ---
-title: 'InterACT project: outcomes 4, 5 and 6'
+title: 'InterACT project: outcomes 4, 5 and 6. Version with blinded hospitals.'
 author: "Adrian Barnett"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 output:
@@ -16,6 +16,7 @@ knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, c
 options(width=1000) # Wide pages
 options(scipen=999) # avoid scientific presentation
 source('99_functions.R')
+source('99_functions_not_shared.R')
 library(diagram) # for flow diagram
 library(boot) # for bootstrap confidence intervals - only if using survival difference
 library(rms) # for survival estimates
@@ -50,6 +51,20 @@ if(scramble == TRUE){
   source('1_scramble_data.R')
 }
 
+# blind hospital
+baseline = mutate(baseline, 
+                  hospital = deidentify_hospital(hospital),
+                  hosp_ordered = factor(hospital, levels=c('X','Y','Z'), ordered =TRUE))
+survival_data  = mutate(survival_data, 
+                        hospital = deidentify_hospital(hospital),
+                        hosp_ordered = factor(hospital, levels=c('X','Y','Z'), ordered =TRUE))
+for (k in 1:10){
+  care_directive_imputed[[k]] = mutate(care_directive_imputed[[k]], hospital = deidentify_hospital(hospital))
+  survival_data_imputed[[k]] = mutate(survival_data_imputed[[k]], hospital = deidentify_hospital(hospital))
+}
+clinicianled_review = mutate(clinicianled_review, hospital = deidentify_hospital(hospital))
+palliative_care_referral = mutate(palliative_care_referral, hospital = deidentify_hospital(hospital))
+  
 # create small subset of variables to add to outcome data
 data_to_add = select(baseline, participant_id, pt_sex, age, cristal_score, spict_score, team)
 ```
@@ -97,7 +112,7 @@ We included patients from the establishment phase in the descriptive tables, but
 
 #### Time-to-event analyses
 
-The time-to-event analyses used the time to the first "Yes" outcome (e.g., time to first clinical-led care review). For patients with only "No" outcomes, the time was censored at the date/time of their last "No" outcome. Discharge date was used to censor all patients in the GCUH and RBWH hospitals. For TPCH, we could only used discharge as a censoring time in a subset of 512 patients who were retrospectively audited. For other TPCH patients we ended their survival time at their last completed audit.
+The time-to-event analyses used the time to the first "Yes" outcome (e.g., time to first clinical-led care review). For patients with only "No" outcomes, the time was censored at the date/time of their last "No" outcome. 
 
 We used Cox models that were stratified on team (within hospital), which meant that each team had its own baseline hazard, which allowed for differences in the ways teams typically manage patients. We could then estimate the change in hazards (times-to-event) due to the intervention. The variables in the model were the potential confounders of age, sex, CRiSTAL and SPICT score, and the intervention phase which used a reference category of "usual care". Age was scaled to a 5-year increase to make the estimates more clinically meaningful. Teams were adjusted for using the baseline hazard.
 
@@ -116,6 +131,7 @@ Some outcomes are missing the exact time the outcome took place. They should hav
 
 ```{r}
 load('data/date_changes.RData') # from ?.R
+date_changes = mutate(date_changes, hospital = deidentify_hospital(hospital)) # blind
 date_changes = mutate(date_changes, 
       days_uc = 1 + as.numeric(date_establishment) - as.numeric(date_usual_care),
       days_int = 1 + as.numeric(date_post) - as.numeric(date_intervention  )) %>%
@@ -258,7 +274,6 @@ The screening not complete is for patients who were not at risk.
 
 The results in this section only use the first clinician-led review discussion per patient. For patients without a care review discussion, we used their final completed follow-up form.
 
-Results can be censored in the GCUH and RBWH hospitals as we are able to track patients up until their discharge. For TPCH, we can only assess patient status at the time the follow-up was complete, hence these patients are "No" at a specific time rather than "censored". "Censored" can be read as "No at the time they were discharged."
 
 ### Has a clinician-led care review discussion occurred?
 
@@ -299,7 +314,8 @@ The table shows the number of patients and row percentages in parentheses.
 ```{r, out.width='100%'}
 to_plot = circular_plots(indata = clinicianled_review, 
                          var = 'care_review',
-                         datetime = 'time_care_review')
+                         datetime = 'time_care_review',
+                         blind = TRUE)
 print(to_plot$week)
 ```
 
@@ -363,7 +379,7 @@ n_excluded_establishment = nrow(filter(survival_data,
 # cumulative probability plot
 # plot in each hospital - change after scrambling
 plot_data = NULL
-for (hosp in c('RBWH','TPCH','GCUH')){
+for (hosp in c('X','Y','Z')){
   this_data = filter(for_model_care_review, hospital ==hosp) %>%
     mutate(
       int_timec = as.character(int_time),
@@ -391,7 +407,7 @@ for (hosp in c('RBWH','TPCH','GCUH')){
 }
 # add CI
 to_plot_care_review = mutate(plot_data,
-                 hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')), # to show in intervention order
+                 hosp_ordered = factor(hospital, levels=c('X','Y','Z')), # to show in intervention order
                  z = qnorm(0.975),
                  lower  = est - (z*sqrt(var)),
                  upper  = est + (z*sqrt(var)),
@@ -460,7 +476,7 @@ The results below are from separate Cox models in each hospital.
 ```{r}
 all_ests_cox_care_review = all_res_cox_care_review = NULL
 influence_cox_care_review = list()
-for (hosp in c("GCUH","TPCH",'RBWH')){
+for (hosp in c("X","Y",'Z')){
   ## Cox model stratified on team within hospital
   cox_model_care_review_hosp = coxph(Surv(time = time, event = event_plus == 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = filter(for_model_care_review, hospital==hosp))
   #
@@ -491,7 +507,7 @@ for (hosp in c("GCUH","TPCH",'RBWH')){
     cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
   select(Variable, hospital, cell) %>%
   pivot_wider(values_from=cell, names_from=hospital) %>%
-    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+    select(Variable, X, Y, Z) # In intervention order
 # table
 ft = flextable(nice_table) %>%
   theme_box() %>%
@@ -505,7 +521,7 @@ As a sensitivity analysis we repeat the survival analysis above, but exclude pat
 
 ```{r}
 all_ests_cox_care_review_no_prior = all_res_cox_care_review_no_prior = NULL
-for (hosp in c("GCUH","TPCH",'RBWH')){
+for (hosp in c("X","Y",'Z')){
   # exclude prior
   to_model = filter(for_model_care_review, 
                     event != 'Prior',
@@ -538,7 +554,7 @@ for (hosp in c("GCUH","TPCH",'RBWH')){
     cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
   select(Variable, hospital, cell) %>%
   pivot_wider(values_from=cell, names_from=hospital) %>%
-    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+    select(Variable, X, Y, Z) # In intervention order
 # table
 ft = flextable(nice_table) %>%
   theme_box() %>%
@@ -558,9 +574,10 @@ if(exists == FALSE){
     indata = for_model_care_review,
     B = n_boot,
     pred_time = pred_time)
-  save(risk_difference_care_review, file = 'results/clinical_led_absolute_results.RData')
 }
-if(exists == TRUE){load('results/clinical_led_absolute_results.RData')}
+if(exists == TRUE){
+  load('results/clinical_led_absolute_results.RData')
+}
 ftab = flextable(risk_difference_care_review) %>%
   theme_box() %>%
   autofit()
@@ -574,7 +591,7 @@ ftab
 exists = length(dir('results', pattern = 'clinical_led_by_hospital_results.RData')) > 0
 if(exists == FALSE){
   all_diffs_care_review = NULL
-  for (hosp in c("GCUH","TPCH",'RBWH')){
+  for (hosp in c("X","Y",'Z')){
     risk_difference = risk_diff_crr(
       indata = filter(for_model_care_review, hospital==hosp),
       B = n_boot,
@@ -582,15 +599,17 @@ if(exists == FALSE){
       mutate(hospital = hosp)
     all_diffs_care_review = bind_rows(all_diffs_care_review, risk_difference)
   }
-  save(all_diffs_care_review, file = 'results/clinical_led_by_hospital_results.RData')
 }
-if(exists == TRUE){load('results/clinical_led_by_hospital_results.RData')}
+if(exists == TRUE){
+  load('results/clinical_led_by_hospital_results.RData')
+  all_diffs_care_review = mutate(all_diffs_care_review, hospital = deidentify_hospital(hospital)) # blind
+}
 
 #
 for_table = mutate(all_diffs_care_review, cell = paste(Event, ' (', CI, ')', sep='')) %>%
   select(hospital, Phase, cell) %>%
   pivot_wider(names_from = hospital, values_from = cell) %>%
-  select(Phase, TPCH, RBWH, GCUH) # in intervention order
+  select(Phase, X, Y, Z) # in intervention order
 #
 ftab = flextable(for_table) %>%
   theme_box() %>%
@@ -608,7 +627,7 @@ Here we plot the baseline hazard in each team. This is useful for checking the d
 ```{r, fig.width=8}
 base = basehaz(cox_model_care_review, centered=TRUE) %>%
   tidyr::separate(strata, into=c('hospital','team')) %>%
-  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+  mutate(hosp_ordered = factor(hospital, levels=c('X','Y','Z')))
 # add team numbers to legend
 counts = group_by(base, hospital, team) %>%
   tally() %>%
@@ -650,8 +669,6 @@ resplot
 
 Because of the strong skew in times, we have log-transformed the x-axis.
 
-There is a small non-proportionality for CriSTAL in RBWH with a possibly weaker influence of CriSTAL at the start of the admission. 
-
 ##### c) Checking for influential patients
 
 Here we check whether there are influential patients in the Cox time-to-event analysis. An influential patient is one who has a large effect of the estimates and hence any inference.
@@ -660,18 +677,12 @@ The plot below shows the 'dfbetas' which are the estimated changes in the regres
 
 ```{r, fig.height=8, fig.width=9}
 #
-grid.arrange(influence_cox_care_review[['TPCH']],
- influence_cox_care_review[['RBWH']],
- influence_cox_care_review[['GCUH']], ncol=1)
-## pick out relatively influential patients
-#f = filter(influence_cox_care_review[['GCUH']]$data, covariate=='CriSTAL score')
-#index = which(f$res< -0.004)
-#View(filter(for_model_care_review, hospital=='GCUH')[index,]) # look at patient's data
+grid.arrange(influence_cox_care_review[['X']],
+ influence_cox_care_review[['Y']],
+ influence_cox_care_review[['Z']], ncol=1)
 ```
 
 The x-axis of observation ID is the order in which patients were recruited over time. 
-
-The largest negative outlier for CriSTAL score at TPCH was a for a high score of 10 for a patient with a relatively long time of 6 days until their clinical-led discussion. The relatively large negative outlier for the CriSTAL score at RBWH was for a patient with the largest CriSTAL score of 10 who was discharged before any clinical-led discussion. The relatively large negative outlier for the CriSTAL score at GCUH was for a patient with the largest CriSTAL score of 11 who was discharged before any clinical-led discussion.
 
 The apparent pattern in influential values for the intervention time is because of the ordering on the x-axis combined with a small difference in the influence of patients in the two treatment phases.
 
@@ -865,7 +876,8 @@ grid.arrange(cplot_uc, cplot_int, nrow=2)
 ```{r, out.width='100%'}
 to_plot = circular_plots(indata = care_directive_imputed[[1]], 
                          var = 'change_5', # outcome
-                         datetime = 'date_time_5') # time of outcome
+                         datetime = 'date_time_5',  # time of outcome
+                         blind = TRUE)
 print(to_plot$week)
 ```
 
@@ -936,7 +948,7 @@ n_excluded_establishment = nrow(filter(survival_data_imputed[[1]], # can use any
 ## cumulative probability plot
 # plot in each hospital - change after scrambling
 plot_data = NULL
-for (hosp in c('RBWH','TPCH','GCUH')){
+for (hosp in c('X','Y','Z')){
   this_data = filter(for_model_care_directive[[1]], hospital ==hosp) %>%
     mutate(
       int_timec = as.character(int_time),
@@ -964,7 +976,7 @@ for (hosp in c('RBWH','TPCH','GCUH')){
 }
 # add CI
 to_plot_care_directive = mutate(plot_data,
-                 hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')), # to show in intervention order
+                 hosp_ordered = factor(hospital, levels=c('X','Y','Z')), # to show in intervention order
                  z = qnorm(0.975),
                  lower  = est - (z*sqrt(var)),
                  upper  = est + (z*sqrt(var)),
@@ -1046,7 +1058,7 @@ The results below are from separate Cox models in each hospital.
 ```{r, include=FALSE}
 all_ests_cox_care_directive = all_res_cox_care_directive = NULL
 influence_cox_care_directive = list()
-for (hosp in c("GCUH","TPCH",'RBWH')){
+for (hosp in c("X","Y",'Z')){
   vars = parms = cox_model_care_directive_hosp = list()
 for (k in 1:10){ # loop through imputations
   cox_model_care_directive_hosp[[k]] = coxph(Surv(time = time, event = event_plus== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = filter(for_model_care_directive[[k]], hospital==hosp))
@@ -1088,7 +1100,7 @@ for (k in 1:10){ # loop through imputations
    cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
   select(Variable, hospital, cell) %>%
   pivot_wider(values_from=cell, names_from=hospital) %>%
-    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+    select(Variable, X, Y, Z) # In intervention order
 ```
   
 ```{r}  
@@ -1104,7 +1116,7 @@ As a sensitivity analysis we repeat the survival analysis above, but exclude pat
 
 ```{r, include=FALSE}
 all_ests_cox_care_directive_no_prior = all_res_cox_care_directive_no_prior = NULL
-for (hosp in c("GCUH","TPCH",'RBWH')){
+for (hosp in c("X","Y",'Z')){
     vars = parms = cox_model_care_directive_hosp_no_prior = list()
 for (k in 1:10){ # loop through imputations
 # exclude prior
@@ -1148,7 +1160,7 @@ for (k in 1:10){ # loop through imputations
    cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
   select(Variable, hospital, cell) %>%
   pivot_wider(values_from=cell, names_from=hospital) %>%
-    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+    select(Variable, X, Y, Z) # In intervention order
 ```
   
 ```{r}  
@@ -1171,7 +1183,6 @@ if(exists == FALSE){
     indata = for_model_care_directive[[1]],
     B = n_boot,
     pred_time = pred_time)
-  save(risk_difference_care_directive, file = 'results/care_directive_absolute_results.RData')
 }
 if(exists == TRUE){load('results/care_directive_absolute_results.RData')}
 # table
@@ -1188,7 +1199,7 @@ ftab
 exists = length(dir('results', pattern = 'care_directive_absolute_by_hospital_results.RData')) > 0
 if(exists == FALSE){
   all_diffs_care_directive = NULL
-  for (hosp in c("GCUH","TPCH",'RBWH')){
+  for (hosp in c("X","Y",'Z')){
     risk_difference = risk_diff_crr(
       indata = filter(for_model_care_directive[[1]], hospital==hosp),
       B = n_boot,
@@ -1196,14 +1207,16 @@ if(exists == FALSE){
       mutate(hospital = hosp)
     all_diffs_care_directive = bind_rows(all_diffs_care_directive, risk_difference)
   }
-  save(all_diffs_care_directive, file='results/care_directive_absolute_by_hospital_results.RData')
 }
-if(exists == TRUE){load('results/care_directive_absolute_by_hospital_results.RData')}
+if(exists == TRUE){
+  load('results/care_directive_absolute_by_hospital_results.RData')
+  all_diffs_care_directive = mutate(all_diffs_care_directive, hospital = deidentify_hospital(hospital))
+}
 # table
 for_table = mutate(all_diffs_care_directive, cell = paste(Event, ' (', CI, ')', sep='')) %>%
   select(hospital, Phase, cell) %>%
   pivot_wider(names_from = hospital, values_from = cell) %>%
-  select(Phase, TPCH, RBWH, GCUH) # in intervention order
+  select(Phase, X, Y, Z) # in intervention order
 #
 ftab = flextable(for_table) %>%
   theme_box() %>%
@@ -1222,7 +1235,7 @@ Here we plot the baseline hazard in each team. This is useful for checking the d
 ```{r, fig.width=8}
 base = basehaz(cox_model_care_directive[[1]], centered=TRUE) %>%
   tidyr::separate(strata, into=c('hospital','team')) %>%
-  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) # 
+  mutate(hosp_ordered = factor(hospital, levels=c())) # 
 # add team numbers to legend
 counts = group_by(base, hospital, team) %>%
   tally() %>%
@@ -1241,7 +1254,6 @@ bplot = ggplot(data=base, aes(x=time, y=hazard, col=team_number)) +
 bplot
 ```
 
-The hazards are relatively consistent, although there is a larger variation between wards at RBWH.
 
 ##### b) Proportional hazards assumption
 
@@ -1273,22 +1285,12 @@ The plot below shows the 'dfbetas' which are the estimated changes in the regres
 
 ```{r, fig.height=8, fig.width=9}
 #
-grid.arrange(influence_cox_care_directive[['TPCH']],
- influence_cox_care_directive[['RBWH']],
- influence_cox_care_directive[['GCUH']], ncol=1)
-## pick out relatively influential patients
-# a) age
-#f = filter(influence_cox_care_directive[['RBWH']]$data, covariate=='Age (+5 years)')
-#index = which(f$res< -0.006)
-# b) cristal
-#f = filter(influence_cox_care_directive[['RBWH']]$data, covariate=='SPICT score')
-#index = which(f$res< -0.01)
-#View(filter(for_model_care_review, hospital=='RBWH')[index,]) # look at patient's data
+grid.arrange(influence_cox_care_directive[['X']],
+ influence_cox_care_directive[['Y']],
+ influence_cox_care_directive[['Z']], ncol=1)
 ```
 
 The x-axis of observation ID is the order in which patients were recruited over time. 
-
-There is one relatively large negative value for age in RBWH; this was a 97 year old who was discharged after 18 days. There is one relatively large negative value for CRiSTAL in RBWH; this was a patient with the highest CriSTAL score of 10 who was discharged after 3 days.
 
 The apparent pattern in influential values for the intervention time is because of the ordering on the x-axis combined with a small difference in the influence of patients in the two treatment phases.
 
@@ -1335,7 +1337,8 @@ ftab
 ```{r, out.width='100%'}
 to_plot = circular_plots(palliative_care_referral,
                          var = 'pall_care',
-                         datetime = 'pall_date')
+                         datetime = 'pall_date',
+                         blind = TRUE)
 print(to_plot$week)
 ```
 
@@ -1379,7 +1382,7 @@ n_excluded_establishment = nrow(filter(survival_data,
 ## cumulative probability plot
 # plot in each hospital - change after scrambling
 plot_data = NULL
-for (hosp in c('RBWH','TPCH','GCUH')){
+for (hosp in c('X','Y','Z')){
   this_data = filter(for_model_palliative, hospital ==hosp) %>%
     mutate(int_timec = as.character(int_time),
       int_timec = ifelse(int_timec=='Usual care', 'UsualCare', int_timec), # ggcompetingrisks cannot handle spaces
@@ -1406,7 +1409,7 @@ for (hosp in c('RBWH','TPCH','GCUH')){
 }
 # add CI
 to_plot_palliative = mutate(plot_data,
-                 hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')), # to show in intervention order
+                 hosp_ordered = factor(hospital, levels=c('X','Y','Z')), # to show in intervention order
                  z = qnorm(0.975),
                  lower  = est - (z*sqrt(var)),
                  upper  = est + (z*sqrt(var)),
@@ -1427,9 +1430,6 @@ alt_plot = ggplot(to_plot_palliative, aes(x=time, y=est, ymin=lower, ymax=upper,
   facet_wrap(~hosp_ordered)
 alt_plot
 
-# save for 2_plot_paper_outcome456.R
-save(to_plot_care_review, to_plot_care_directive, to_plot_palliative, file='results/plot_data.RData')
-
 # for text, number of events post cut-off
 n_after = sum(for_model_palliative$time > pred_time)
 percent_after = round(100*n_after / nrow(for_model_palliative))
@@ -1439,11 +1439,6 @@ post_cutoff = paste(n_after, ' (', percent_after, '%)', sep='')
 We limited the plot to the first `r pred_time` days because there were only `r post_cutoff` events after this time.
 
 Note the y-axis upper limit was set below 1 due to the relatively small number of events.
-
-```{r, include=FALSE}
-# make team-specific plots for survival curves
-source('2_interact_summary_456_teams.R')
-```
 
 ##### Cox time-to-event model of time to first palliative care referral
 
@@ -1480,7 +1475,7 @@ The results below are from separate Cox models in each hospital.
 ```{r}
 all_ests_cox_palliative = all_res_cox_palliative = NULL
 influence_cox_palliative = list()
-for (hosp in c("GCUH","TPCH",'RBWH')){
+for (hosp in c('X','Y','Z')){
   # Cox model stratified on team within hospital
   cox_model_palliative_hosp = coxph(Surv(time = time, event = event_plus== 'Yes') ~ int_time_n + I(age/5) + pt_sex +  cristal_score + spict_score + strata(team), data = filter(for_model_palliative, hospital==hosp))
   #
@@ -1511,7 +1506,7 @@ for (hosp in c("GCUH","TPCH",'RBWH')){
     cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
   select(Variable, hospital, cell) %>%
   pivot_wider(values_from=cell, names_from=hospital) %>%
-    select(Variable, TPCH, RBWH, GCUH) # In intervention order
+    select(Variable, X, Y, Z) # In intervention order
 ft = flextable(nice_table) %>%
   theme_box() %>%
   autofit()
@@ -1524,7 +1519,7 @@ As a sensitivity analysis we repeat the survival analysis above, but exclude pat
 
 ```{r}
 all_ests_cox_palliative_no_prior = all_res_cox_palliative_no_prior = NULL
-for (hosp in c("GCUH","TPCH",'RBWH')){
+for (hosp in c('X','Y','Z')){
   # exclude prior
   to_model = filter(for_model_palliative, 
                     event != 'Prior',
@@ -1557,7 +1552,7 @@ nice_table = filter(all_ests_cox_palliative_no_prior, !is.na(estimate)) %>%
          cell = paste(HR, ' (', conf.low, ' to ' , conf.high, ')', sep='')) %>%
   select(Variable, hospital, cell) %>%
   pivot_wider(values_from=cell, names_from=hospital) %>%
-  select(Variable, TPCH, RBWH, GCUH) # In intervention order
+  select(Variable, X, Y, Z) # In intervention order
 # table
 ft = flextable(nice_table) %>%
   theme_box() %>%
@@ -1579,7 +1574,6 @@ if(exists == FALSE){
     dp = 3, # extra decimal place due to proportions under 0.10
     B = n_boot,
     pred_time = pred_time)
-  save(risk_difference_palliative, file = 'results/palliative_absolute_results.RData')
 }
 if(exists == TRUE){load('results/palliative_absolute_results.RData')}
 # table
@@ -1596,7 +1590,7 @@ ftab
 exists = length(dir('results', pattern = 'palliative_absolute_by_hospital_results.RData')) > 0
 if(exists == FALSE){
   all_diffs_palliative = NULL
-  for (hosp in c("GCUH","TPCH",'RBWH')){
+  for (hosp in c('X','Y','Z')){
     risk_difference = risk_diff_crr(
       indata = filter(for_model_palliative, hospital==hosp),
       B = n_boot,
@@ -1604,27 +1598,21 @@ if(exists == FALSE){
       mutate(hospital = hosp)
     all_diffs_palliative = bind_rows(all_diffs_palliative, risk_difference)
   }
-  save(all_diffs_palliative, file = 'results/palliative_absolute_by_hospital_results.RData')
 }
-if(exists == TRUE){load('results/palliative_absolute_by_hospital_results.RData')}
+if(exists == TRUE){
+  load('results/palliative_absolute_by_hospital_results.RData')
+  all_diffs_palliative = mutate(all_diffs_palliative, hospital = deidentify_hospital(hospital)) # blind
+}
 # table
 for_table = mutate(all_diffs_palliative, cell = paste(Event, ' (', CI, ')', sep='')) %>%
   select(hospital, Phase, cell) %>%
   pivot_wider(names_from = hospital, values_from = cell) %>%
-  select(Phase, TPCH, RBWH, GCUH) # in intervention order
+  select(Phase, X, Y, Z) # in intervention order
 #
 ftab = flextable(for_table) %>%
   theme_box() %>%
   autofit()
 ftab
-
-# save regression models for 2_main_table_outcome456.Rmd
-save(all_ests_cox_care_directive,
-     all_ests_cox_care_review,
-     all_ests_cox_palliative,
-     all_diffs_care_directive,
-     all_diffs_care_review,
-     all_diffs_palliative, file='results/regression_data.RData')
 ```
 
 
@@ -1637,7 +1625,7 @@ Here we plot the baseline hazard in each team. This is useful for checking the d
 ```{r, fig.width=8}
 base = basehaz(cox_model_palliative, centered=TRUE) %>%
   tidyr::separate(strata, into=c('hospital','team')) %>%
-  mutate(hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) # 
+  mutate(hosp_ordered = factor(hospital, levels=c('X','Y','Z'))) # 
 # add team numbers to legend
 counts = group_by(base, hospital, team) %>%
   tally() %>%
@@ -1688,9 +1676,9 @@ The plot below shows the 'dfbetas' which are the estimated changes in the regres
 
 ```{r, fig.height=8, fig.width=9}
 #
-grid.arrange(influence_cox_palliative[['TPCH']],
- influence_cox_palliative[['RBWH']],
- influence_cox_palliative[['GCUH']], ncol=1)
+grid.arrange(influence_cox_palliative[['X']],
+ influence_cox_palliative[['Y']],
+ influence_cox_palliative[['Z']], ncol=1)
 ```
 
 The x-axis of observation ID is the order in which patients were recruited over time. 
@@ -1706,7 +1694,7 @@ ref_datetime = ISOdatetime(year=2020, month=5, day=25, hour=0, min=0, sec=1, tz=
 ref_datetime = as.numeric(ref_datetime)
 # intervention times
 load('data/date_changes.RData') # from 0_date_changes.R
-date_changes = mutate(date_changes, hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+date_changes = mutate(date_changes, hosp_ordered = factor(hospital, levels=c('X','Y','Z')))
 lines = select(date_changes, hospital, hosp_ordered, date_intervention) %>%
   mutate(line = as.POSIXct(date_intervention, tz='Australia/Brisbane'),
          line = as.numeric(line),
@@ -1747,7 +1735,7 @@ calendar_time_care_review = calendar_time(indata=for_model_care_review_with_esta
 start_time = 1
 end_time = floor(max(calendar_time_care_review$start) - window)
 smooth_time_care_review = smooth_prop_care_review = NULL
-for (hosp in c('GCUH','RBWH','TPCH')){
+for (hosp in c('X','Y','Z')){
 for (time in start_time:end_time){ # loop through calendar time one day at a time
   start_window = time + 0 # one-way window
   end_window = time + window
@@ -1774,7 +1762,7 @@ for (time in start_time:end_time){ # loop through calendar time one day at a tim
 ## plot q1
 # add ordered hospitals
 smooth_time_care_review = mutate(smooth_time_care_review,
-            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+            hosp_ordered = factor(hospital, levels=c('X','Y','Z')))
 #
 mplot = ggplot(data=smooth_time_care_review, aes(x=time, y=q1, col=hosp_ordered)) +
   geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
@@ -1823,7 +1811,7 @@ The plot shows the first quartile time by hospital and calendar time, with short
 ## plot proportion
 # add ordered hospitals
 smooth_prop_care_review = mutate(smooth_prop_care_review,
-            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) 
+            hosp_ordered = factor(hospital, levels=c('X','Y','Z'))) 
 #
 pplot = ggplot(data=smooth_prop_care_review, aes(x=time, y=p, fill=event)) +
   geom_bar(stat='identity', position='stack') +
@@ -1880,7 +1868,7 @@ calendar_time_care_directive = calendar_time(for_model_care_directive_with_estab
 start_time = 1
 end_time = floor(max(calendar_time_care_directive$start) - window)
 smooth_time_care_directive = smooth_prop_care_directive = NULL
-for (hosp in c('GCUH','RBWH','TPCH')){
+for (hosp in c('X','Y','Z')){
 for (time in start_time:end_time){ # loop through calendar time one day at a time
   start_window = time + 0
   end_window = time + window
@@ -1907,7 +1895,7 @@ for (time in start_time:end_time){ # loop through calendar time one day at a tim
 ## plot q1
 # add ordered hospitals
 smooth_time_care_directive = mutate(smooth_time_care_directive,
-            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+            hosp_ordered = factor(hospital, levels=c('X','Y','Z')))
 #
 mplot = ggplot(data=smooth_time_care_directive, aes(x=time, y=q1, col=hosp_ordered)) +
   geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
@@ -1954,7 +1942,7 @@ for (time in start_time:end_time){ # loop through calendar time one day at a tim
 ## plot proportion
 # add ordered hospitals
 smooth_prop_care_directive = mutate(smooth_prop_care_directive,
-            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) 
+            hosp_ordered = factor(hospital, levels=c('X','Y','Z'))) 
 #
 pplot = ggplot(data=smooth_prop_care_directive, aes(x=time, y=p, fill=event)) +
   geom_bar(stat='identity', position='stack') +
@@ -2009,7 +1997,7 @@ calendar_time_palliative = calendar_time(for_model_palliative_with_establishment
 start_time = 1
 end_time = floor(max(calendar_time_care_review$start) - window)
 smooth_time_palliative = smooth_prop_palliative = NULL
-for (hosp in c('GCUH','RBWH','TPCH')){
+for (hosp in c('X','Y','Z')){
 for (time in start_time:end_time){ # loop through calendar time one day at a time
   start_window = time + 0 
   end_window = time + window
@@ -2036,7 +2024,7 @@ for (time in start_time:end_time){ # loop through calendar time one day at a tim
 ## plot q1
 # add ordered hospitals
 smooth_time_palliative = mutate(smooth_time_palliative,
-            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH')))
+            hosp_ordered = factor(hospital, levels=c('X','Y','Z')))
 #
 mplot = ggplot(data=smooth_time_palliative, aes(x=time, y=q1, col=hosp_ordered)) +
   geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
@@ -2077,9 +2065,6 @@ for (time in start_time:end_time){ # loop through calendar time one day at a tim
 }
 }
 
-## Save the three calendar team results for plotting
-# used by 2_plot_paper_outcome456_teams.R
-save(ticks, lines, smooth_prop_care_directive_teams, smooth_prop_care_review_teams, smooth_prop_palliative_teams, file='results/smooth_calendar_teams.RData')
 ```
 
 #### Plot of event proportions by calendar time (palliative care referral)
@@ -2088,7 +2073,7 @@ save(ticks, lines, smooth_prop_care_directive_teams, smooth_prop_care_review_tea
 ## plot proportion
 # add ordered hospitals
 smooth_prop_palliative = mutate(smooth_prop_palliative,
-            hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) 
+            hosp_ordered = factor(hospital, levels=c('X','Y','Z'))) 
 #
 pplot = ggplot(data=smooth_prop_palliative, aes(x=time, y=p, fill=event)) +
   geom_bar(stat='identity', position='stack') +
@@ -2124,9 +2109,6 @@ nplot = ggplot(data=smooth_prop_palliative, aes(x=time, y=n, fill=event)) +
   theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
 nplot
-
-# save calendar plots for 2_plot_paper_outcome456.R
-save(ticks, lines, smooth_prop_care_review, smooth_prop_care_directive, smooth_prop_palliative, file='results/plot_calendar_data.RData')
 ```
 
 
@@ -2480,7 +2462,7 @@ Here we examine the number of patients entered into the study over time. The aim
 library(splines)
 # make frame of all dates
 all_dates = seq(min(baseline$admission_date, na.rm=TRUE), max(baseline$admission_date, na.rm=TRUE), 1)
-all_dates = expand.grid(hospital=c('TPCH','RBWH','GCUH'), admission_date=all_dates)
+all_dates = expand.grid(hospital=c('X','Y','Z'), admission_date=all_dates)
 # Poisson model
 for_model = group_by(baseline, admission_date, hospital) %>%
   tally() %>%
@@ -2492,7 +2474,7 @@ for_model = bind_cols(for_model, pred) %>%
         mutate( z = qnorm(0.975),
                    lower = fit - (z*se.fit),
                    upper = fit + (z*se.fit),
-                hosp_ordered = factor(hospital, levels=c('TPCH','RBWH','GCUH'))) # to show in intervention order)
+                hosp_ordered = factor(hospital, levels=c('X','Y','Z'))) # to show in intervention order)
 # plot
 gplot = ggplot(data=for_model, aes(x=admission_date, y=fit, ymin=lower, ymax=upper))+
   geom_vline(data=date_changes, aes(xintercept=date_intervention), lty=2) + # vertical reference line at intervention time
@@ -2572,7 +2554,7 @@ p_plot = ggplot(data=to_plot, aes(x=admission_week, y=p))+
 p_plot
 ```
 
-The plot shows the weekly proportion at risk and a smoothed line (dotted red line) with 95% confidence interval (grey area). The scales on the y-axes vary by hospital. There were large changes over time in the proportion at risk for TPCH and RBWH, whilst it was relatively constant in GCUH.
+The plot shows the weekly proportion at risk and a smoothed line (dotted red line) with 95% confidence interval (grey area). The scales on the y-axes vary by hospital. 
 
 ## Sensitivity analyses #8: proportion of uncensored patients
 
@@ -2598,7 +2580,7 @@ ftab = flextable(cens_table) %>%
 ftab
 ```
 
-The table shows the number of patients and percent uncensored, ideally this would be close to 100%. There was a relatively large amount of censoring at TPCH, in particular for palliative care referral, because many patients could not be followed until discharge. 
+The table shows the number of patients and percent uncensored, ideally this would be close to 100%. 
 
 ## Sensitivity analyses #9: proportion of at-risk patients from aged care facilities
 
@@ -2627,7 +2609,7 @@ p_plot = ggplot(data=to_plot, aes(x=admission_week, y=p))+
 p_plot
 ```
 
-The dots show the weekly numbers and the green dotted line is a smoothed estimate of the mean with a 95% confidence interval. There was a large rise in the percentage of patients from an RACF in TPCH just after the intervention phase began.
+The dots show the weekly numbers and the green dotted line is a smoothed estimate of the mean with a 95% confidence interval. 
 
 ```{r, include=FALSE}
 # saving results
@@ -2649,8 +2631,6 @@ all_ests_cox_palliative_no_prior, .id='model') %>%
     model %in% c(5,6)== TRUE ~ 1
   ),
   outcome = factor(outcome, levels=1:3, labels=c('Palliative care','Care directive','Care review')))
-
-save(results, file='results/prior_or_not.RData')
 ```
 
 # References

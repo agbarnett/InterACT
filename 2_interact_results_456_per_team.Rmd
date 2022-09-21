@@ -41,11 +41,10 @@ if(scramble == TRUE){
 }
 
 # create small subset of variables to add to outcome data
-data_to_add = select(baseline, participant_id, pt_sex, age, team)
+data_to_add = select(baseline, participant_id, pt_sex, age, cristal_score, spict_score, team)
 ```
 
 This report examines outcomes 4, 5 and 6 by team.
-
 
 # Clinician-led review discussion
 
@@ -56,8 +55,7 @@ Here we use time-to-event analysis to examine the time to the first clinical-led
 # exclude prior:
 for_model_care_review = filter(survival_data,
                   outcome == 'care_review',
-                  int_time != 'Establishment', # excluded from analysis
-                  event != 'Prior') %>%
+                  int_time != 'Establishment') %>% # excluded from analysis
   mutate(  event = as.character(event), # needed for ifelse below
            event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
 
@@ -88,7 +86,8 @@ for (hosp in c('RBWH','TPCH','GCUH')){
     unique()
 for (this_team in teams){
   this_data = filter(for_model_care_review, hospital ==hosp, team==this_team) %>%
-    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+    mutate(event = ifelse(event=='Prior', 'Yes', event), # prior count as events at early time
+           eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
   cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
   g = ggcompetingrisks(cum_inc,
                        xlab = 'Days',
@@ -178,10 +177,9 @@ The results in this section only use the first care directive per patient. For p
 ```{r, include=FALSE}
 ## prepare data for cumulative and instantaneous survival models
 # exclude prior:
-for_model_care_directive = filter(survival_data,
+for_model_care_directive = filter(survival_data_imputed[[1]],
                   outcome == 'care_directive',
-                  int_time != 'Establishment', # excluded from analysis
-                  event != 'Prior') %>%
+                  int_time != 'Establishment') %>% # excluded from analysis
   mutate(  event = as.character(event), # needed for ifelse below
            event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
 
@@ -199,7 +197,8 @@ for (hosp in c('RBWH','TPCH','GCUH')){
     unique()
 for (this_team in teams){
   this_data = filter(for_model_care_directive, hospital ==hosp, team==this_team) %>%
-    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+    mutate(event = ifelse(event=='Prior', 'Yes', event), # prior count as events at early time
+           eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
   cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
   g = ggcompetingrisks(cum_inc,
                        xlab = 'Days',
@@ -223,24 +222,6 @@ to_plot = mutate(plot_data,
                  group = ifelse(group=='Usual', 'Usual care', group))
 ```
 
-### RBWH
-
-```{r, fig.width=8, fig.height=7}
-rbwh = filter(to_plot, hospital=='RBWH')
-# redo plot for greater control
-alt_plot = ggplot(rbwh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
-  geom_ribbon(alpha=0.2) +
-  geom_line(size = 1.05) +  # make lines thicker
-  scale_y_continuous(limits=c(0,1)) + # 
-  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
-  theme_bw() +
-  scale_color_manual(NULL, values=cbPalette) +
-  xlab('Days from ward admission') +
-  ylab('Cumulative probability') +
-  theme(legend.position = c(0.85, 0.15)) +
-  facet_wrap(~team)
-alt_plot
-```
 
 ### TPCH
 
@@ -261,6 +242,25 @@ alt_plot = ggplot(tpch, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
 alt_plot
 ```
 
+
+### RBWH
+
+```{r, fig.width=8, fig.height=7}
+rbwh = filter(to_plot, hospital=='RBWH')
+# redo plot for greater control
+alt_plot = ggplot(rbwh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
+  geom_ribbon(alpha=0.2) +
+  geom_line(size = 1.05) +  # make lines thicker
+  scale_y_continuous(limits=c(0,1)) + # 
+  coord_cartesian(xlim=c(0,pred_time))+ # limit based on censoring
+  theme_bw() +
+  scale_color_manual(NULL, values=cbPalette) +
+  xlab('Days from ward admission') +
+  ylab('Cumulative probability') +
+  theme(legend.position = c(0.85, 0.15)) +
+  facet_wrap(~team)
+alt_plot
+```
 ### GCUH
 
 ```{r, fig.width=8, fig.height=7}
@@ -291,8 +291,7 @@ The results in this section only use the first palliative care referral per pati
 # exclude prior:
 for_model_palliative = filter(survival_data,
                   outcome == 'palliative_care_referral',
-                  int_time != 'Establishment', # excluded from analysis
-                  event != 'Prior') %>%
+                  int_time != 'Establishment') %>% # excluded from analysis
   mutate(  event = as.character(event), # needed for ifelse below
            event = ifelse(event== 'No', 'Censored', event)) # change "No" to "censored" for this analysis. Competing risks are death/event
 
@@ -310,7 +309,8 @@ for (hosp in c('RBWH','TPCH','GCUH')){
     unique()
 for (this_team in teams){
   this_data = filter(for_model_palliative, hospital ==hosp, team==this_team) %>%
-    mutate(eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
+    mutate(event = ifelse(event=='Prior', 'Yes', event), # prior count as events at early time
+           eventSimple = ifelse(event!='Yes', 'Censored', 'Yes')) # everything not yes is censored
   cum_inc = with(this_data, cuminc(ftime=time, fstatus=eventSimple, group=int_time, cencode='Censored'))
   g = ggcompetingrisks(cum_inc,
                        xlab = 'Days',
@@ -391,6 +391,9 @@ alt_plot = ggplot(gcuh, aes(x=time, y=est, ymin=lower, ymax=upper, col=group)) +
 alt_plot
 ```
 
+###### page break
+
+
 # Calendar time scale in the time-to-event analyses
 
 Below we use calendar time for the survival analyses. This is useful for spotting what times there were relative increases or decreases in the 4, 5, 6 outcomes.
@@ -407,21 +410,33 @@ lines = select(date_changes, hospital, hosp_ordered, date_intervention) %>%
   mutate(line = as.POSIXct(date_intervention, tz='Australia/Brisbane'),
          line = as.numeric(line),
          time = (line - ref_datetime)/(60*60*24)) # difference from starting date
-# add all teams to lines
-all_teams = select(baseline, hospital, team) %>% unique()
-lines = left_join(lines, all_teams, by='hospital')
-# subtract 28 days from intervention time to remove 4 week establishment phase prior to intervention
-lines = mutate(lines, time = time - 28)
+# ticks for x-axis
+ticks = data.frame(dates = c('2020-06-01','2020-08-01','2020-10-01','2020-12-01','2021-02-01','2021-04-01','2021-06-01')) %>%
+  mutate(dates = as.Date(dates),
+         ticks = as.numeric(dates),
+         ticks = ticks - min(ticks), # day from first date
+         labels = format(dates, '%e %b %Y'))
+
+# Smoothing window
+window = 30 # window size in days (one-sided)
 ```
+
 
 ## a) Time to clinician-led care review discussion
 
-```{r}
+```{r, include=FALSE}
+# get again from survival data without excluding establishment
+for_model_care_review_with_establishment = filter(survival_data,
+                  outcome == 'care_review') %>%
+  left_join(data_to_add, by='participant_id')
 # put data on alternative time scale 
-calendar_time_care_review = calendar_time(indata=for_model_care_review, changes=date_changes) # see 99_functions.R
+calendar_time_care_review = calendar_time(indata=for_model_care_review_with_establishment, changes=date_changes) # see 99_functions.R
 
-diff_plots = NULL
-for (hosp in c('TPCH','RBWH','GCUH')){
+# smooth over calendar time using a window
+start_time = floor(window/2)
+end_time = floor(max(calendar_time_care_review$start) - (window/2))
+smooth_prop_care_review = NULL
+for (hosp in c('GCUH','RBWH','TPCH')){
   
   # loop through teams
   teams = filter(for_model_care_review, hospital==hosp) %>% # get all teams
@@ -429,285 +444,331 @@ for (hosp in c('TPCH','RBWH','GCUH')){
     unique()
   
   for (this_team in teams){
-    # run Cox model
-    cox_model_care_review_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex, data = filter(calendar_time_care_review, hospital == hosp, team==this_team))
-    #
-    base = basehaz(cox_model_care_review_calendar, centered=TRUE) %>%
-      mutate(hospital = hosp)
-    # make data for difference plot:
-    diff_plot = base_haz_difference(inbase = base)  %>%
-      mutate(team = this_team)
-    diff_plots = bind_rows(diff_plots, diff_plot)
-    
+  
+for (time in start_time:end_time){ # loop through calendar time one day at a time
+  start_window = time - window
+  end_window = time + window
+  data_window = filter(calendar_time_care_review, 
+                hospital == hosp, # by hospital ...
+                team == this_team, # ... and team
+                start < end_window, # in the time window: must have started ...
+                end > start_window) %>% # ... must not have ended 
+    mutate(start = start - start_window, # reset clock to the start of the window
+           end = end - start_window)
+  # use cox model, include prior and yes as events
+  fit = coxph(Surv(time = start, time2=end, event = event %in% c('Prior','Yes')) ~ pt_sex + I(age/5), data=data_window) # no team here
+  # proportion of events
+  prop = group_by(data_window, event) %>%
+    tally() %>%
+    mutate(p = prop.table(n)) %>%
+    mutate(hospital=hosp, team = this_team, time=time)
+  smooth_prop_care_review = bind_rows(smooth_prop_care_review, prop) 
+}
   }
 }
+
+# re-order levels so that legend has better appearance
+levels = c('Prior','Yes','No','Discharge','Intervention','Post-intervention')
+colours = cbPalette[c(2,3,6,1,7,8)]
+smooth_prop_care_review = mutate(smooth_prop_care_review, 
+                             event = factor(event, levels=levels))
 ```
 
-### i) TPCH
+#### TPCH 
 
 ```{r, fig.width=8}
-# get ticks
-ticks = x_ticks(Hospital='TPCH', 
-                tick_dates = c('2020-05-25','2020-10-13','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='TPCH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='TPCH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+## plot proportion
+#
+pplot = ggplot(data=filter(smooth_prop_care_review, hospital=='TPCH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
 ```
 
-### ii) RBWH
+#### RBWH 
 
-```{r, fig.width=8, fig.height=8}
-# get ticks
-ticks = x_ticks(Hospital='RBWH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-15','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='RBWH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='RBWH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+```{r, fig.width=8}
+## plot proportion
+#
+pplot = ggplot(data=filter(smooth_prop_care_review, hospital=='RBWH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
 ```
 
-### iii) GCUH
+#### GCUH 
 
-```{r, fig.width=8, fig.height=6}
-# get ticks
-ticks = x_ticks(Hospital='GCUH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-02-16','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='GCUH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='GCUH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+```{r, fig.width=8}
+## plot proportion
+#
+pplot = ggplot(data=filter(smooth_prop_care_review, hospital=='GCUH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
 ```
 
 
 
 ## b) Time to care directives documents
 
-```{r}
+```{r, include=FALSE}
+# get again from survival data without excluding establishment
+for_model_care_directive_with_establishment = filter(survival_data_imputed[[1]],
+                  outcome == 'care_directive') %>%
+  left_join(data_to_add, by='participant_id')
 # put data on alternative time scale 
-calendar_time_care_directive = calendar_time(indata=for_model_care_directive, changes=date_changes) # see 99_functions.R
+calendar_time_care_directive = calendar_time(indata=for_model_care_directive_with_establishment, changes=date_changes) # see 99_functions.R
 
-diff_plots = NULL
-for (hosp in c('TPCH','RBWH','GCUH')){
+# smooth over calendar time using a window
+start_time = floor(window/2)
+end_time = floor(max(calendar_time_care_directive$start) - (window/2))
+smooth_prop_care_directive = NULL
+for (hosp in c('GCUH','RBWH','TPCH')){
   
   # loop through teams
-  teams = filter(calendar_time_care_directive, hospital==hosp) %>% # get all teams
+  teams = filter(for_model_care_directive, hospital==hosp) %>% # get all teams
     pull(team) %>%
     unique()
   
   for (this_team in teams){
-    # run Cox model
-    cox_model_care_directive_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex, data = filter(calendar_time_care_directive, hospital == hosp, team==this_team))
-    #
-    base = basehaz(cox_model_care_directive_calendar, centered=TRUE) %>%
-      mutate(hospital = hosp)
-    # make data for difference plot:
-    diff_plot = base_haz_difference(inbase = base)  %>%
-      mutate(team = this_team)
-    diff_plots = bind_rows(diff_plots, diff_plot)
-    
+  
+for (time in start_time:end_time){ # loop through calendar time one day at a time
+  start_window = time - window
+  end_window = time + window
+  data_window = filter(calendar_time_care_directive, 
+                hospital == hosp, # by hospital ...
+                team == this_team, # ... and team
+                start < end_window, # in the time window: must have started ...
+                end > start_window) %>% # ... must not have ended 
+    mutate(start = start - start_window, # reset clock to the start of the window
+           end = end - start_window)
+  # use cox model, include prior and yes as events
+  fit = tryCatch(coxph(Surv(time = start, time2=end, event = event %in% c('Prior','Yes')) ~ pt_sex + I(age/5), data=data_window), error = function(e) print(paste('did not converge', this_team))) # no team here
+  if(class(fit) == 'character'){ # refit without covariates
+    fit = coxph(Surv(time = start, time2=end, event = event %in% c('Prior','Yes')) ~ 1, data=data_window)
+  }
+  # proportion of events
+  prop = group_by(data_window, event) %>%
+    tally() %>%
+    mutate(p = prop.table(n)) %>%
+    mutate(hospital=hosp, team = this_team, time=time)
+  smooth_prop_care_directive = bind_rows(smooth_prop_care_directive, prop) 
+}
   }
 }
+
+# re-order levels so that legend has better appearance
+levels = c('Prior','Yes','No','Discharge','Intervention','Post-intervention')
+colours = cbPalette[c(2,3,6,1,7,8)]
+smooth_prop_care_directive = mutate(smooth_prop_care_directive, 
+                             event = factor(event, levels=levels))
+
 ```
 
-### i) TPCH
+
+#### TPCH 
 
 ```{r, fig.width=8}
-# get ticks
-ticks = x_ticks(Hospital='TPCH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='TPCH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='TPCH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+## plot proportion
+pplot = ggplot(data=filter(smooth_prop_care_directive, hospital=='TPCH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
+```
+
+#### RBWH 
+
+```{r, fig.width=8}
+## plot proportion
+pplot = ggplot(data=filter(smooth_prop_care_directive, hospital=='RBWH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  xlab('Calendar time') +
+  ylab('Proportion of outcomes') +
+  g.theme+
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
+        axis.text.x = element_text(angle = 45, hjust=1))
+pplot
+```
+
+#### GCUH 
+
+```{r, fig.width=8}
+## plot proportion
+pplot = ggplot(data=filter(smooth_prop_care_directive, hospital=='GCUH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  xlab('Calendar time') +
+  ylab('Proportion of outcomes') +
+  g.theme+
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
+        axis.text.x = element_text(angle = 45, hjust=1))
+pplot
 ```
 
 
-### ii) RBWH
+## c) Palliative care
 
-```{r, fig.width=8, fig.height=8}
-# get ticks
-ticks = x_ticks(Hospital='RBWH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='RBWH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='RBWH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
-  xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
-  g.theme+
-  theme(legend.position='none',
-        axis.text.x = element_text(angle = 45, hjust=1))
-bplot
-```
-
-### iii) GCUH
-
-```{r, fig.width=8, fig.height=6}
-# get ticks
-ticks = x_ticks(Hospital='GCUH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='GCUH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='GCUH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
-  xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
-  g.theme+
-  theme(legend.position='none',
-        axis.text.x = element_text(angle = 45, hjust=1))
-bplot
-```
-
-## c) Time to palliative care referral
-
-```{r}
+```{r, include=FALSE}
+# get again from survival data without excluding establishment
+for_model_pall_care_with_establishment = filter(survival_data,
+                  outcome == 'palliative_care_referral') %>%
+  left_join(data_to_add, by='participant_id')
 # put data on alternative time scale 
-calendar_time_palliative = calendar_time(indata=for_model_palliative, changes=date_changes) # see 99_functions.R
+calendar_time_pall_care = calendar_time(indata=for_model_pall_care_with_establishment, changes=date_changes) # see 99_functions.R
 
-diff_plots = NULL
-for (hosp in c('TPCH','RBWH','GCUH')){
+# smooth over calendar time using a window
+start_time = floor(window/2)
+end_time = floor(max(calendar_time_pall_care$start) - (window/2))
+smooth_prop_pall_care = NULL
+for (hosp in c('GCUH','RBWH','TPCH')){
   
   # loop through teams
-  teams = filter(calendar_time_palliative, hospital==hosp) %>% # get all teams
+  teams = filter(for_model_pall_care_with_establishment, hospital==hosp) %>% # get all teams
     pull(team) %>%
     unique()
   
   for (this_team in teams){
-    # run Cox model
-    cox_model_palliative_calendar = coxph(Surv(time = start, time2=end, event = event== 'Yes') ~ I(age/5) + pt_sex, data = filter(calendar_time_palliative, hospital == hosp, team==this_team))
-    #
-    base = basehaz(cox_model_palliative_calendar, centered=TRUE) %>%
-      mutate(hospital = hosp)
-    # make data for difference plot:
-    diff_plot = base_haz_difference(inbase = base)  %>%
-      mutate(team = this_team)
-    diff_plots = bind_rows(diff_plots, diff_plot)
-    
+  
+for (time in start_time:end_time){ # loop through calendar time one day at a time
+  start_window = time - window
+  end_window = time + window
+  data_window = filter(calendar_time_pall_care, 
+                hospital == hosp, # by hospital ...
+                team == this_team, # ... and team
+                start < end_window, # in the time window: must have started ...
+                end > start_window) %>% # ... must not have ended 
+    mutate(start = start - start_window, # reset clock to the start of the window
+           end = end - start_window)
+  # use cox model, include prior and yes as events
+  fit = tryCatch(coxph(Surv(time = start, time2=end, event = event %in% c('Prior','Yes')) ~ pt_sex + I(age/5), data=data_window), error = function(e) print(paste('did not converge', this_team))) # no team here
+  if(class(fit) == 'character'){ # refit without covariates
+    fit = coxph(Surv(time = start, time2=end, event = event %in% c('Prior','Yes')) ~ 1, data=data_window)
+  }
+  # proportion of events
+  prop = group_by(data_window, event) %>%
+    tally() %>%
+    mutate(p = prop.table(n)) %>%
+    mutate(hospital=hosp, team = this_team, time=time)
+  smooth_prop_pall_care = bind_rows(smooth_prop_pall_care, prop) 
+}
   }
 }
+
+# re-order levels so that legend has better appearance
+levels = c('Prior','Yes','No','Discharge','Intervention','Post-intervention')
+colours = cbPalette[c(2,3,6,1,7,8)]
+smooth_prop_pall_care = mutate(smooth_prop_pall_care, 
+                             event = factor(event, levels=levels))
+
 ```
 
-### i) TPCH
+#### TPCH 
 
 ```{r, fig.width=8}
-# get ticks
-ticks = x_ticks(Hospital='TPCH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='TPCH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='TPCH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+## plot proportion
+pplot = ggplot(data=filter(smooth_prop_pall_care, hospital=='TPCH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
 ```
 
+#### RBWH 
 
-### ii) RBWH
-
-```{r, fig.width=8, fig.height=8}
-# get ticks
-ticks = x_ticks(Hospital='RBWH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='RBWH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='RBWH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+```{r, fig.width=8}
+## plot proportion
+pplot = ggplot(data=filter(smooth_prop_pall_care, hospital=='RBWH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
 ```
 
-### iii) GCUH
+#### GCUH 
 
-```{r, fig.width=8, fig.height=6}
-# get ticks
-ticks = x_ticks(Hospital='GCUH', 
-                tick_dates = c('2020-05-25','2020-09-01','2020-12-01','2021-03-01','2021-06-01'),
-                date_changes = date_changes)
-# plot
-bplot = ggplot(data=filter(diff_plots, hospital=='GCUH'), aes(x=time, y=diff, col=team)) +
-  geom_vline(data=filter(lines, hospital=='GCUH'), aes(xintercept=time), lty=2) + # vertical reference line at change
-  geom_line() +
-  geom_hline(yintercept=0, col='grey33', lty=3)+
-  scale_color_manual(NULL, values=cbPalette) +
-  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels)+
+```{r, fig.width=8}
+## plot proportion
+pplot = ggplot(data=filter(smooth_prop_pall_care, hospital=='GCUH'), aes(x=time, y=p, fill=event)) +
+  geom_bar(stat='identity', position='stack') +
+  geom_vline(data=lines, aes(xintercept=time), lty=2) + # vertical reference line at change
+  scale_fill_manual(NULL, values=cbPalette)+
+  scale_x_continuous(breaks=ticks$ticks, labels=ticks$labels, expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   xlab('Calendar time') +
-  ylab('Cumulative hazard difference') +
-  facet_wrap(~team, scales='free_y') +
+  ylab('Proportion of outcomes') +
   g.theme+
-  theme(legend.position='none',
+  facet_wrap(~team, scales='free_y')+
+  guides(fill=guide_legend(nrow = 1)) + # for legend
+  theme(legend.position='top',
         axis.text.x = element_text(angle = 45, hjust=1))
-bplot
+pplot
 ```
