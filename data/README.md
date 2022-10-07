@@ -20,3 +20,5 @@ The variables are:
 * Intervention time (`int_time`, Usual care, Intervention)
 * Hospital (blinded)
 * Clinical team (`team` blinded)
+
+The data are in R and csv formats. There are 12,738 rows in the data.
