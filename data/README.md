@@ -10,6 +10,7 @@ These patient-level data used to examine the in-hospital outcomes of:
 
 The variables are:
 
+* Outcome (care review, care directive, palliative care)
 * Age (years)
 * Gender (`pt_sex`)
 * CRiSTAL score (`cristal_score`)
