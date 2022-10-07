@@ -8,11 +8,14 @@ These patient-level data used to examine the in-hospital outcomes of:
 * review of care directive measures
 * palliative care referrals
 
-The variables in the data are:
+The variables are:
 
 * Age (years)
-* Gender
-* CRiSTAL score
-* SPICT score
-* Time between admission and outcome (fractional days)
-* Intervention group
+* Gender (`pt_sex`)
+* CRiSTAL score (`cristal_score`)
+* SPICT score (`spict_score`)
+* Time between admission and outcome (`time` in fractional days)
+* Event (Discharge, Death, Prior, Censored)
+* Intervention time (`int_time`, Usual care, Intervention)
+* Hospital (blinded)
+* Clinical team (`team` blinded)
