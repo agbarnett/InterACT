@@ -1,0 +1,2155 @@
+---
+title: "InterACT outcomes 1, 2, 3 and 7"
+author: "Nicole White; Adrian Barnett"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+source('99_packages.R')
+source('99_functions.R')
+source('../99_functions_not_shared.R') # for blinding
+
+# load required data
+source('99_trial_information.R') # basic trial information
+trial_dates = mutate(trial_dates, study_label = deidentify_hospital(study_label)) %>% # blind, added AGB
+  arrange(study_label)
+
+# load processed data to identify study enrolment and included numbers:
+load('processed/at_risk_info.rda') # for cohort_lookup
+rm(screening_dates)
+
+# From 3_define_outcomes.R
+load('analysis_ready/trial_outcomes_data.rda')
+
+## AGB, blind hospital
+#
+cristal_spict_admission_info = mutate(cristal_spict_admission_info,
+                  fclty_name = deidentify_hospital_long(fclty_name),
+                  fclty_name_ordered = factor(fclty_name, levels=c('X','Y','Z'), ordered =TRUE))
+#
+cristal_spict_admission_info = cristal_spict_admission_info %>%
+  mutate(Hospital = str_remove_all(study_id,'_.*'),
+         Hospital = deidentify_hospital(Hospital)) # blind, added AGB 
+
+## intention to treat or not
+## AGB: Change one team that did not receive intervention to control only (usual care at all times)
+itt = TRUE # intention to treat
+if(itt == FALSE){
+cristal_spict_admission_info = mutate(cristal_spict_admission_info,
+          study_period = as.character(study_period),            
+          study_period = ifelse(clinical_team_fclty=='4', 'Usual care', study_period),
+          study_period = as.factor(study_period))
+}
+```
+
+This report covers outcomes 1, 2, 3 and 7. Outcomes 4, 5 and 6 have been summarised elsewhere.
+
+Results in this report are summarised by outcome.
+
+* Outcome 1: Proportion of patients with one or more Intensive Care Unit (ICU) admissions (primary outcome). ICU admissions during the current hospital stay from the date first recorded as high-risk CriSTAL and SPICT-positive.
+
+* Outcome 2: Hospital length of stay and hospital outcome. Length of hospital stay, with the transition endpoints of ‘discharged alive’ and ‘death in hospital’, from the date first recorded as high-risk CriSTAL and SPICT-positive.
+
+* Outcome 3: Time to hospital re-admission. The time in days to re-admission to any Queensland public hospital for re-admissions within 12 weeks from the date of discharge.
+
+* Outcome 7: Time to first medical emergency call. The time in days to first medical emergency call during the current hospital stay.
+
+Results presented in this report are limited to patients classified as ``at-risk'' due to a positive SPICT or CRiSTAL screening. Clinical teams and hospitals are de-identified.
+
+\newpage
+
+### Relevant sections from the protocol
+
+All data analyses presented in the following subsections will be adjusted for potential confounders of patient age and sex, unless specified otherwise. Additionally, the fitted models will be assessed for adequacy of model fit to data and tested for violations of model assumptions.
+
+Censoring will be used in the survival analyses to avoid contamination of the estimated intervention effect from patients exposed to multiple study phases. Specifically, 
+
+*	Usual care exposure period patient data will only include patients admitted to a clinical team and identified as high-risk CriSTAL or SPICT-positive during the usual care exposure period
+
+*	Data collected in the intervention establishment phase will not be included in the statistical analysis. Patients who remain in the wards at the change-over time to the establishment phase are censored on the day prior to the change-over. 
+
+*	Only patients admitted and identified as high-risk CriSTAL or SPICT-positive in the Intervention phase will be included as data for the Intervention phase. 
+
+*	Patients who remain in the hospital at the end of the Intervention phase will be censored on the last study day. 
+
+
+There is a potential risk that the censoring will be statistically informative as it is more likely to affect patients with long hospital stays. We will compare patient characteristics, notably their length of stay and other study outcomes listed below, of those who were censored with those who were not censored. If large differences are detected, the survival models will be adapted to use inverse probability censoring weighting estimators to explicitly account for the informative censoring. 
+
+For most analyses we examine the time to the first event rather than the total number of events, for example, the time to first medical emergency team (MET) call rather than the total number of MET calls during the patient’s hospital admission. This is because the first event is often crucial and potentially sets patients down a very different care pathway. If the intervention is successful, then we would expect it to have a positive impact on the time to first event. We note that our planned survival analyses examine both the time and number of first events. 
+
+Subgroup analyses of the primary outcome and secondary outcomes will be performed for each individual hospital separately.
+
+\newpage
+
+# Basic information
+
+### Trial flowchart
+
+```{r}
+#initial sample size: person_id and study_id
+total_study_id = cohort_lookup %>% distinct(study_id) %>% nrow()
+total_person_id = cohort_lookup %>% distinct(person_id) %>% nrow()
+
+#apply exclusion criteria
+## could not match cristal/spict with admit date time
+
+n_unmatched = outstanding_records %>% distinct(study_id) %>% nrow()
+## duplicate at risk identification within the same hospital stay
+n_duplicate_screen = duplicated_screening %>% distinct(study_id) %>% nrow()
+
+## intention to treat censoring
+n_excluded_establishment = excluded_on_censoring %>% distinct(study_id) %>% nrow()
+n_censored_usualcare = filter(cristal_spict_admission_info,censored_admit==1,study_period=='Usual care') %>% distinct(study_id) %>% nrow()
+n_censored_intervention = filter(cristal_spict_admission_info, censored_admit==1, study_period=='Intervention phase') %>% distinct(study_id) %>% nrow()
+
+#numbers for flow chart
+
+ns = 7293 # AGB: add numbers screened
+n0 = total_study_id
+n_notatrisk = ns - n0
+n_matched = n0-n_unmatched
+n1 = n_matched - n_duplicate_screen
+n2 = n1 - n_excluded_establishment 
+n3 = n2-n_censored_usualcare - n_censored_intervention
+
+#extract trial dates
+trial_info = trial_dates %>% select(study_label,study_period,start_date,end_date) %>%
+  mutate(Weeks=ceiling(as.numeric(end_date-start_date,'weeks'))) %>%
+    mutate_at(c('start_date','end_date'),~format(.,'%d %B %Y')) %>% filter(!is.na(study_label)) %>%
+  rename('Hospital'=study_label,'Study phase'=study_period,'Start date'=start_date,'End date'=end_date)
+
+
+#define the number of clinical teams per hospital
+n_cluster_teams = cristal_spict_admission_info %>% group_by(Hospital) %>% summarise(n_team = length(unique(clinical_team)),n_atrisk=n(),.groups='drop') 
+
+#add number of clinical teams to trial_info
+trial_info = left_join(trial_info,select(n_cluster_teams,Hospital,n_team),by=c('Hospital')) %>% rename('Teams'=n_team)
+
+```
+
+
+```{r, fig.height=7, fig.width=10}
+library(Gmisc)
+library(magrittr)
+library(glue)
+library(grid)
+
+# 5_make_flow.R
+# draws flow chart
+
+  screened <- boxGrob(glue("Admissions screened\nn = {n_s}",n_s=format(ns,big.mark=',')))
+  org_cohort <- boxGrob(glue("At-risk hospital admissions in trial database\nn = {n_0}",n_0=format(n0,big.mark=',')))
+  eligible <- boxGrob(glue("Matched to index hospital admission date\nn = {n_1a}",n_1a=format(n1,big.mark=',')))
+  included <- boxGrob(glue("Total at-risk admissions analysed: n = {final_n}",
+                           " - Hospital X: n = {n_x}", # blinded
+                           " - Hospital Y: n = {n_y}",
+                           " - Hospital Z: n = {n_z}",
+                           final_n = format(n2,big.mark=','),
+                           n_z = format(filter(n_cluster_teams,Hospital=='Z')[['n_atrisk']],big.mark=','),
+                           n_x = format(filter(n_cluster_teams,Hospital=='X')[['n_atrisk']],big.mark=','),
+                           n_y = format(filter(n_cluster_teams,Hospital=='Y')[['n_atrisk']],big.mark=','),
+                           .sep = "\n"),
+                      just = "left")
+  #
+  excluded_0 <- boxGrob(glue("Excluded:",
+                             " - Not at risk: n = {notatrisk}",
+                             notatrisk = n_notatrisk,
+                             .sep = "\n"),
+                        just = "left")
+  #
+  excluded_1 <- boxGrob(glue("Excluded:",
+" - Unknown hospital admission date: n = {unmatchedadmit}",
+" - Duplicate at-risk identification: n = {duplicateadmit}",
+unmatchedadmit = n_unmatched,
+duplicateadmit = n_duplicate_screen,
+.sep = "\n"),
+just = "left")
+  #
+  excluded_2 <- boxGrob(glue("Excluded:",
+                             " - Intervention establishment phase: n = {establishment}",
+                             establishment = n_excluded_establishment,
+                             .sep = "\n"),
+                        just = "left")
+  
+  # Move boxes to where we want them
+  vert <- spreadVertical(screened = screened, 
+                         org_cohort = org_cohort,
+                         eligible = eligible,
+                         included = included)
+  
+  
+  y0 <- coords(vert$org_cohort)$top +distance(vert$screened, vert$org_cohort, half = TRUE, center = FALSE)
+  y1 <- coords(vert$eligible)$top +distance(vert$org_cohort, vert$eligible, half = TRUE, center = FALSE)
+  y2 <- coords(vert$included)$top +distance(vert$eligible, vert$included, half = TRUE, center = FALSE)
+  excluded_0 <- moveBox(excluded_0, x = 0.8, y = y0)
+  excluded_1 <- moveBox(excluded_1, x = 0.8, y = y1)
+  excluded_2 <- moveBox(excluded_2, x = 0.8, y = y2)
+  
+  # Connect vertical arrows, skip last box
+  for (i in 1:(length(vert) - 1)) {
+    connectGrob(vert[[i]], vert[[i + 1]], type = "vert") %>%
+      print
+  }
+  
+  # Add a connection to the exclusions
+  connectGrob(vert$screened, excluded_0, type = "L")
+  connectGrob(vert$org_cohort, excluded_1, type = "L")
+  connectGrob(vert$eligible, excluded_2, type = "L")
+  
+  # Print boxes
+  vert
+  excluded_0
+  excluded_1
+  excluded_2
+
+```
+
+* `r format(total_study_id,big.mark=',')` unique study records from `r format(total_person_id,big.mark=',')` individuals were extracted from the database at the end of the trial.
+
+Excluded records:
+
+* inability to match study records to a hospital admission date (n = `r n_unmatched`), 
+ duplicate identifications of an at-risk individual within the same hospital admission (n = `r n_duplicate_screen`) 
+* study enrollment during the intervention establishment phase (n = `r n_excluded_establishment`). 
+
+* The final sample size contained `r format(n2,big.mark=',')` eligible study records across the three hospitals.
+
+The next table gives key trial dates by hospital, and the number of teams enrolled at each hospital.
+
+```{r}
+#
+flextable(trial_info) %>% 
+          merge_v(j='Hospital')%>%
+         theme_box() %>% 
+         fontsize(size=9,part='all') %>%
+         width( width = c(0.7, 1.75, 1.4, 1.4, 0.6, 0.6)) %>% 
+         set_caption(caption='Trial dates by hospital')
+```
+
+In the next table, we show numbers of patients classified as at-risk during the usual care and Intervention phases by hospital.
+
+```{r}
+# update n_cluster_teams to include number of admission by study phase
+n_atrisk_byphase = cristal_spict_admission_info %>% 
+ group_by(Hospital,study_period) %>% summarise(n_atrisk = n(),.groups='drop') %>% spread(study_period,n_atrisk) %>% select(Hospital,`Usual care`,`Intervention exposure`) %>%
+  mutate(`Total at-risk`=`Usual care`+`Intervention exposure`) %>% 
+  mutate_if(is.numeric,function(x) format(x,big.mark=',',trim=T))
+
+# manual ordering for presentation
+ftab1 = n_atrisk_byphase %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(0.7,1.25,1.75,1.25))
+
+ftab1 %>% set_caption('Number of eligible at-risk hospital admissions')  
+
+```
+
+\newpage
+
+### Patient age and gender summaries
+
+The plot below shows the age distribution for patients who were classified as high-risk CriSTAL/SPICT positive.
+
+```{r, out.width='100%', fig.width=7}
+cristal_spict_admission_info = cristal_spict_admission_info %>% 
+  mutate_at('study_period',~relevel(factor(.),ref='Usual care')) 
+p <- ggplot(cristal_spict_admission_info, aes(x=Hospital, y=age_on_admission, fill=factor(Hospital))) + 
+  scale_fill_manual('Hospital', values=cbPalette) +
+  geom_violin(alpha=0.5) +
+  geom_boxplot(width=0.1) +
+  xlab('Hospital') +
+  ylab('Age') +
+  facet_wrap(~rev(study_period))+
+  g.theme+
+  theme(legend.position = 'none')
+p
+```
+
+The table shows the breakdown of female and male patients classified as high-risk CriSTAL/SPICT positive. Results are presented as frequency (percentage).
+
+```{r}
+ftab_sex = group_by(cristal_spict_admission_info, Hospital, study_period,sex) %>%
+  tally() %>%
+  group_by(Hospital, study_period) %>%
+  mutate(p = round(prop.table(n)*100),
+         cell = paste(n, ' (', p, ')', sep='')) %>%
+  select(-n, -p) %>%
+  pivot_wider(values_from=cell, names_from='sex') %>%
+  rename('Study phase' = 'study_period') %>% flextable() %>%
+  theme_box() %>%
+  autofit() %>%  
+  fontsize(size=9,part='all') %>%
+  merge_v(j=1)
+ftab_sex
+```
+
+\newpage
+### Baseline summary table 
+
+```{r baseline}
+## Add back in SPICT and CRISTAL for table
+load('../data/FullData.RData')
+scores = select(baseline, participant_id, cristal_score, spict_score) %>%
+  rename(study_id = participant_id)
+for_table = left_join(cristal_spict_admission_info, scores, by='study_id') %>%
+  mutate(at_risk_date = as.Date(cristal_spict_date_time)) %>%
+  rename('age' = 'age_on_admission')
+
+## Vector of all variables to summarise (in order)
+myVars <- c("at_risk","at_risk_date","sex","age","cristal_score","spict_score")
+## Vector of categorical variables
+catVars <- c('at_risk',"sex")
+medians = c("age","cristal_score","spict_score",'at_risk_date')
+## Create a TableOne object
+tab1 <- CreateTableOne(vars = myVars, 
+                       data = for_table, 
+                       factorVars = catVars, 
+                       strata = 'study_period', 
+                       test = FALSE, 
+                       includeNA = TRUE,
+                       addOverall = FALSE)
+# table
+print(tab1, 
+      catDigits = 1, # will no longer allow 0
+      contDigits = 1, 
+      nonnormal = medians, # give median not mean/SD
+      explain = TRUE, 
+      showAllLevels = TRUE,
+      formatOptions = list(big.mark = ","))
+
+```
+
+Summary stats for at-risk dates:
+
+```{r}
+dates = group_by(for_table, study_period) %>%
+  summarise(median = median(at_risk_date),
+            q1 = quantile(at_risk_date, 0.25, type=1),
+            q3 = quantile(at_risk_date, 0.75, type=1),
+            min = min(at_risk_date),
+            max = max(at_risk_date)) %>%
+  ungroup()
+flextable(dates) %>%
+  theme_box() %>%
+  autofit()
+```
+
+\newpage
+### Outcome numbers by study phase 
+
+The next figure provides an overall summary of event numbers, for usual care and Intervention phases.
+
+<!--- from Excel --->
+
+![Frequency of study outcomes from identification as high-risk CriSTAL/SPICT-positive](manuscript/figures/outcomes_figure_alt.png){width=3000px}
+
+\newpage
+
+# Outcome 1: Proportion of patients with one or more Intensive Care Unit (ICU) admissions (primary outcome)
+
+The primary outcome was defined as one or more ICU admissions during the current hospital stay from the date first recorded as high-risk CriSTAL and SPICT-positive. The outcome was treated as a binary outcome where 1 = 1+ ICU admissions during the current hospital stay, and 0 otherwise.
+
+### Relevant text from the protocol (Outcome 1)
+
+* The primary outcome will be analysed using a Binomial regression with the patient ICU admission as the binary response variable. The question is: does the patient have at least one ICU admission in their relevant hospital admission episode? 
+
+* The key variable is the timing of the switch from usual care exposure to Intervention phase, so the main result of this analysis will be the Intervention phase effect on the proportion of patients with at least one ICU admission. 
+
+* A linear time covariate will be included to capture any potential calendar time trend throughout the 58 week data collection period. The model will also adjust for potential confounders of patient age and sex. 
+
+* The model will include a random intercept for each enrolled clinical team to account for any underlying differences in the proportion of patients with ICU admissions between the teams. 
+
+
+### Descriptive summary (Outcome 1)
+
+
+In the next table, we show total numbers (and percentages in brackets) of hospital admissions that involved one or more ICU admissions. 
+
+
+```{r}
+load('analysis_ready/final_dataset.rda')
+## AGB: Change one team that did not receive intervention to control only (usual care at all times)
+if(itt == FALSE){
+# with(dat_analysis, table(study_period, clinical_team_fclty)) # check
+dat_analysis = mutate(dat_analysis,
+          study_period = as.character(study_period),            
+          study_period = ifelse(clinical_team_fclty=='4', 'Usual care', study_period),
+          study_period = as.factor(study_period)) # transform back
+# with(dat_analysis, table(study_period, clinical_team_fclty)) # check
+}
+
+dat_analysis = dat_analysis %>% 
+  mutate(Hospital = str_remove_all(study_id,'_.*'),
+         Hospital = deidentify_hospital(Hospital), # blind
+         study_period = case_when(intervention==0~'Usual care',intervention==1~'Intervention phase') %>% factor(.,level=c('Usual care','Intervention phase')))
+ftab_icu_n = dat_analysis %>% group_by(Hospital,study_period) %>% 
+  summarise(n = sum(status_icu),p = roundz(100*mean(status_icu),1),.groups = 'drop') %>% 
+  mutate(cell=paste0(n,' (',p,')')) %>% 
+  select(-n,-p) %>% 
+  spread(study_period,cell) 
+  
+
+ad = dat_analysis %>% 
+  group_by(study_period) %>% 
+  summarise(n = sum(status_icu),p = roundz(100*mean(status_icu),1),.groups = 'drop') %>% 
+  mutate(cell=paste0(n,' (',p,')')) %>% 
+  select(-n,-p) %>%
+  add_column('Hospital'='All',.before=1) %>% 
+  spread(study_period, cell) 
+
+ftab_icu_n = bind_rows(ftab_icu_n, ad)
+  
+ftab_icu_n = flextable(ftab_icu_n) %>%
+  theme_box() %>% 
+  autofit() %>%  
+  fontsize(size=9, part='all') 
+
+ftab_icu_n
+
+```
+
+Observed outcomes by patient age, and study week are shown in subsequent figures. In the figure for patient age below, we show the cumulative age distribution of patients who were admitted to the ICU at least once during the same hospital stay. 
+
+From the figure, we see that age distributions are similar across the three hospitals. Across hospitals, findings show that approximately 50% of patients with 1+ ICU admissions were between 75 and 85 years.
+
+```{r,fig.width=8,fig.height=5,fig.cap='Age profile of patients with 1+ ICU admissions during their current hospital stay'}
+g1 = dat_analysis %>% ggplot(aes(age_scaled*5+85,status_icu,group=Hospital,colour=Hospital))+
+  stat_ecdf(size=1)+
+  facet_grid(~study_period) + 
+  scale_colour_manual('Hospital', values=cbPalette)+
+  scale_x_continuous('Age at hospital admission, years',breaks=seq(75,120,5))+
+  scale_y_continuous('Cumulative proportion of 1+ ICU admissions\nin dataset',breaks=seq(0,1,0.1))+
+  g.theme
+
+g1 
+```
+
+In the next figure, we show the weekly numbers and percentages of patients with 1+ ICU admissions over time. Weekly totals are based on week of study enrollment/identification as CriSTAL/SPICT positive. There was some evidence of differences in weekly percentages by hospital, however, total patient numbers per week were similar. Weekly percentages were highest at Y, however, this was driven by smaller weekly numbers of at-risk hospital admissions, compared with X and Z.
+
+```{r,fig.width=10,fig.height=8,fig.cap= 'Frequencies and percentages of at-risk patients with 1+ ICU admissions during their current hospital stay; by week of study enrollment. First row: Weekly frequencies; Second row: Weekly percentages'}
+g2 = dat_analysis %>% 
+  group_by(Hospital,study_week) %>% 
+  summarise('1+ ICU admissions (%)' = 100*mean(status_icu),
+                                                             '1+ ICU admissions (n)' = sum(status_icu),
+                                                             n = n(),
+                                                             .groups='drop') %>%
+    right_join(tibble(study_week=0:53),by='study_week') %>% 
+  gather(variable,value,-Hospital,-study_week) %>%
+  mutate_at('variable',~factor(.,level=rev(unique(.))))
+
+g2a = filter(g2,variable=='1+ ICU admissions (n)') %>%
+  ggplot(aes(study_week,value,group=variable))+geom_col(width=1,colour='black',fill='darkgrey') + geom_hline(aes(yintercept=0))+facet_grid(~Hospital)+
+  expand_limits(x=0:52)+
+  ggtitle('Weekly number of patients')+
+  scale_x_continuous('Week of study enrolment',breaks=seq(0,52,8))+
+  scale_y_continuous('Weekly outcome',breaks=c(0,1,2))+g.theme+theme(axis.text.x = element_text(angle=0,hjust=0.5))
+
+g2b = filter(g2,variable=='1+ ICU admissions (%)') %>%
+  ggplot(aes(study_week,value,group=variable))+geom_col(width=1,colour='black',fill='darkgrey') + geom_hline(aes(yintercept=0))+facet_grid(~Hospital)+
+  expand_limits(x=0:52)+
+    ggtitle('Weekly percentage of patients')+
+  scale_x_continuous('Week of study enrolment',breaks=seq(0,52,8))+
+  scale_y_continuous('Weekly outcome',breaks=seq(0,20,2))+g.theme
+
+ggarrange(g2a,g2b,nrow=2,ncol=1)
+
+
+```
+
+### Mixed model analysis (Outcome 1)
+
+#### intention to treat analysis (Outcome 1)
+
+We modelled the primary outcome using mixed effects Binomial regression. The dependent variable was defined as 1+ ICU admissions (0 = no, 1 = yes). A logit link function was assumed for the dependent variable; resulting parameter estimate are interpreted on the log odds scale. 
+
+Independent variables from the study protocol were:
+
+* Study period (Usual care, Intervention phase)
+* Weeks since study commencement (continuous, linear trend)
+* Age at admission (years). Age at admission was centered at 85 years and scaled to a per 5 year increase in age.
+* Gender (Female, Male). 
+
+A random intercept was specified for each clinical team to account for clustering. 
+
+We trialed a random slope for the intervention effect by clinical team. The model did not converge. Therefore, results are presented for the random intercept model only. 
+
+Regression output is presented as odds ratios with 95% confidence intervals (CIs). 
+
+Marginal (linear) effects for continuous variables (study week, age at admission) and random effects are plotted as separate figures.
+
+As a sensitivity analysis, we accounted for seasonal effects by adding sine and cosine terms to the model as fixed effects. Seasonal effects were defined as functions of calendar time.
+
+
+The results in the first table show regression output for all hospitals combined. Increasing patient age was associated with a lower odds of 1+ ICU admissions. Male patients were more likely to be admitted to the ICU at least once during their hospital stay. 
+
+
+
+```{r}
+#dat_analysis = mutate_at(dat_analysis,'clinical_team_fclty',~as.character(.))
+icu.mod <- glmer(status_icu ~ intervention + study_week + age_scaled + sex + (1|clinical_team_fclty),family=binomial('logit'),data=dat_analysis)
+
+#summarise mod1
+#wald CIs used for glmer output (faster): confirm when finalising results
+##outputs will be ggeffects plot for study_week
+calendar_effects = ggeffects::ggeffect(icu.mod,terms="study_week[0:53]",type='fe',back.transform = TRUE) %>% as.data.frame()
+age_effects = ggeffects::ggeffect(icu.mod,terms="age_scaled[-2:4,by=0.5]",type='fe',back.transform = TRUE) %>% as.data.frame()
+intervention_effect = ggeffects::ggeffect(icu.mod,terms="intervention",type='fe',back.transform = TRUE) %>% as.data.frame()
+
+#GLMER output
+ftab.icu_glmer = summary(icu.mod)$coefficients %>% as.data.frame() %>% rownames_to_column(var='Parameter') %>% select(Parameter,Estimate,`Std. Error`) %>% mutate_at('Estimate',~exp(.)) 
+icu_glmer_ci = exp(confint.merMod(icu.mod,method="Wald")) %>% as.data.frame() %>% rownames_to_column(var="Parameter")
+ftab.icu_glmer = ftab.icu_glmer %>% left_join(icu_glmer_ci,by="Parameter")
+
+ftab.icu_glmer = ftab.icu_glmer %>% 
+  mutate('Odds ratio (95% CI)' = paste0(roundz(Estimate,2),' (',roundz(`2.5 %`,2),' to ',roundz(`97.5 %`,2),')')) %>%
+                 select(Parameter,`Odds ratio (95% CI)`) %>% 
+  mutate_at("Parameter", ~ case_when(
+    .=='(Intercept)' ~ 'Intercept',
+    .=='intervention' ~ 'Intervention phase',
+    .=='study_week' ~ 'Calendar time (+1 week)',
+    .=='age_scaled' ~ 'Patient age (per 5 year increase; Mean = 85 years)',
+    .=='sexMale' ~ 'Sex: Male'))
+                 
+                 
+ftab.icu_glmer = filter(ftab.icu_glmer,Parameter!="Intercept") %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(3.2,1.5))
+
+ftab.icu_glmer %>% set_caption('Binomial mixed effects regression: 1+ ICU admissions')
+
+```
+
+The odds ratio of 1+ ICU admissions between usual care and Intervention phases was 0.84 (0.33 to 2.16). 
+
+
+Marginal effects for patient age, study week are shown in the figure below (Panels A and B, respectively). Estimated random effects for each team (within hospital) are shown in Panel C.
+
+```{r,fig.width=10,fig.height=14,fig.cap='Marginal effects estimated from Binomial mixed effects regression: 1+ ICU admissions by age (A) and study week (B). Estimated random effects and 95% CI by team (C)'}
+
+g.icu_week = ggplot(calendar_effects,aes(x=x,y=100*predicted,ymin=100*conf.low,ymax=100*conf.high))+
+  geom_point()+geom_errorbar(width=.1)+
+  expand_limits(y=0.05)+
+  scale_x_continuous('Calendar time (weeks since study start)',breaks=seq(0,52,4))+scale_y_continuous('1+ ICU admissions (%)',breaks=seq(1,5,0.5))+g.theme
+
+g.icu_age= ggplot(age_effects,aes(x=5*x+85,y=100*predicted,ymin=100*conf.low,ymax=100*conf.high))+
+  geom_point()+geom_errorbar(width=.1)+
+  scale_x_continuous('Age at admission',breaks=seq(75,120,5))+scale_y_continuous('1+ ICU admissions (%)',breaks=seq(0.0,10,1))+g.theme
+
+#random effects
+rr1 <-ranef(icu.mod)
+icu.re <-as.data.frame(rr1) #%>% mutate_at('grp',~factor(.,levels=1:14))
+#add hosiptal for colours
+ad <- dat_analysis %>% distinct(Hospital,clinical_team_fclty)
+icu.re = icu.re %>% 
+  left_join(ad,by=c('grp'='clinical_team_fclty')) %>% 
+  mutate_at('grp',~as.numeric(as.character(.))) 
+  
+g.icu_re = ggplot(icu.re, aes(y=grp,x=condval,colour=Hospital)) +
+        geom_point() + 
+        geom_errorbarh(aes(xmin=condval -2*condsd,
+                           xmax=condval +2*condsd), height=0)+
+  geom_vline(aes(xintercept=0),linetype='dashed')+
+  expand_limits(x=c(-3,3))+
+  scale_colour_manual('Hospital', values=cbPalette)+
+  scale_x_continuous('Random effect',breaks=seq(-3,3,0.5))+
+  scale_y_continuous('Clinical team',breaks=1:14)+
+  g.theme
+
+
+
+ggarrange(g.icu_age,g.icu_week,g.icu_re,nrow=3,ncol=1,labels=LETTERS[1:3])
+
+```
+
+#### Checking for influential observations (Outcome 1)
+
+The next figure shows the results of leave-one-out analysis on estimated model effects. Changes in parameters estimates were largest for Intervention phase.
+
+```{r, fig.cap="DFBETA plots for 1+ ICU admissions",fig.width=8,fig.height=8}
+##could not get influence to work on glmer. Have investigated as a glm with clinical team included as a fixed effect
+icu.mod_1 <- glm(status_icu ~ intervention + study_week + age_scaled + sex + clinical_team_fclty,family=binomial('logit'),data=dat_analysis)
+
+icu.dfbeta = dfbeta(icu.mod_1) %>% as.data.frame %>% rownames_to_column(var='id') %>% gather(variable,DFBETA,-id) %>% filter(!grepl('clinical_team_fclty|Intercept',variable)) %>% mutate_at('id',~as.numeric(.))
+
+
+ggplot(icu.dfbeta,aes(x=id,y=DFBETA,group=variable))+geom_point()+facet_wrap(~variable,nrow=2,ncol=2)+scale_x_continuous('Observation ID',breaks=seq(0,4000,1000))+scale_y_continuous(breaks=seq(-0.06,0.06,0.02))+g.theme
+
+```
+
+#### Sensitivity analysis (Outcome 1)
+
+Adding seasonal terms affected model estimates, including Intervention phase. Model output is given in the next table.
+
+```{r}
+#seasonal effect (from agb)
+#admit_frac = season::yrfraction(admit_date)
+#cosw = cos(2*pi*admit_frac)
+#sinw = sin(2*pi*admit_frac)
+
+dat_analysis = dat_analysis %>% mutate(admit_frac = season::yrfraction(admit_date),
+                                       sinw = sin(2*pi*admit_frac),
+                                       cosw = cos(2*pi*admit_frac))
+
+mod.icu_sens <- glmer(status_icu ~ intervention + study_week + age_scaled + sex + sinw + cosw + (1|clinical_team_fclty),family=binomial('logit'),data=dat_analysis)
+intervention_effect_sens = ggeffects::ggeffect(mod.icu_sens,terms="intervention",type='fe',back.transform = TRUE) %>% as.data.frame()
+
+ftab.icu_sens = summary(mod.icu_sens)$coefficients %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  select(term,Estimate)
+
+#add CIs (wald)
+cis=confint(mod.icu_sens,method='Wald') %>% as.data.frame %>% rownames_to_column(var='term')
+ftab.icu_sens = inner_join(ftab.icu_sens,cis,by='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='study_week' ~ 'Calendar time (+1 week)',
+           term=='sinw' ~ 'Seasonality: Sine function',
+           term=='cosw' ~ 'Seasonality: Cosine function'),
+         'Odds ratio (95% CI)' = paste0(roundz(exp(Estimate),2),' (',roundz(exp(`2.5 %`),2),' to ',roundz(exp(`97.5 %`),2),')')) %>%
+  select(Parameter,`Odds ratio (95% CI)`) %>% filter(!is.na(Parameter))
+
+
+ftab.icu_sens %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5)) %>% set_caption('Binomial mixed effects regression output for 1+ ICU admissions; sensitivity analysis')
+
+
+
+```
+
+
+The next figure shows the estimated seasonal effect. The figure shows that the odds of ICU admission were lower during the winter months, compared with the rest of the year.
+
+
+```{r fig.cap='Estiamated Odds ratio based on time of year, 1+ ICU admissions',fig.width=8,fig.height=5}
+seasonal_est = summary(mod.icu_sens)$coefficients %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  select(term,Estimate) %>% filter(grepl('sinw|cosw',term)) %>% spread(term,Estimate) %>%
+  mutate(admit_frac=list(seq(0,1,0.01))) %>% unnest(cols=admit_frac) %>% 
+  mutate(out = exp(sinw*sin(2*pi*admit_frac)+cosw*cos(2*pi*admit_frac)),
+         admit_day = season::invyrfraction(admit_frac,type='monthly',text=F))
+
+
+ggplot(seasonal_est,aes(x=admit_day,y=out,group=1))+geom_line(size=1)+
+  scale_x_continuous('Calendar month (Jan - Dec)',breaks=1.5:13.5,labels=c(as.character(month(1:12,label=T)),''))+
+  scale_y_continuous('Odds ratio',breaks=seq(0,1.5,0.05))+
+  scale_colour_manual(values=cbPalette)+g.theme
+
+```
+
+Updated results for leave-one-out analysis are shown in the next figure.
+
+```{r, fig.cap="DFBETA plots for 1+ ICU admissions",fig.width=8,fig.height=8}
+##could not get influence to work on glmer. Have investigated as a glm with clinical team included as a fixed effect
+icu.mod_1 <- glm(status_icu ~ intervention + study_week + age_scaled + sex + sinw + cosw + clinical_team_fclty,family=binomial('logit'),data=dat_analysis)
+
+icu.dfbeta = dfbeta(icu.mod_1) %>% as.data.frame %>% rownames_to_column(var='id') %>% gather(variable,DFBETA,-id) %>% filter(!grepl('clinical_team_fclty|Intercept',variable)) %>% mutate_at('id',~as.numeric(.))
+
+
+ggplot(icu.dfbeta,aes(x=id,y=DFBETA,group=variable))+geom_point()+facet_wrap(~variable,nrow=2,ncol=3)+scale_x_continuous('Observation ID',breaks=seq(0,4000,1000))+scale_y_continuous(breaks=seq(-0.06,0.06,0.02))+g.theme
+
+```
+
+#### Overall event probabilities (Outcome 1)
+
+
+The next table shows the estimated event probabilities of ICU admissions by study phase. Results are reported for intention to treat and sensitivity analyses. 
+
+Model-based bootstrapping did not converge, due to the low number of events. For this reason, we were unable to estimate uncertainty in the absolute difference in probabilities between intervention and usual care periods.
+
+
+```{r}
+ftab.icu_effect = intervention_effect %>% select(x,predicted,conf.low,conf.high) %>%
+  mutate('Study period' = factor(x,0:1,c('Usual care','Intervention phase')),
+         'Estimate (95% CI)' = paste0(roundz(predicted,3),' (',roundz(conf.low,3),' to ',roundz(conf.high,3),')')) %>%
+  select(`Study period`,`Estimate (95% CI)`) 
+ad = intervention_effect_sens %>% select(x,predicted,conf.low,conf.high) %>%
+  mutate('Study period' = factor(x,0:1,c('Usual care','Intervention phase')),
+         'Estimate (95% CI)' = paste0(roundz(predicted,3),' (',roundz(conf.low,3),' to ',roundz(conf.high,3),')')) %>%
+  select(`Study period`,`Estimate (95% CI)`) 
+
+bind_rows(list("intention to treat"=ftab.icu_effect,"Sensitivity"=ad),.id="Analysis") %>% flextable() %>% 
+  merge_v(j="Analysis") %>% theme_box() %>%
+  fontsize(size=9,part='all') %>% width(width=c(1,2,1.5)) %>% set_caption('Estimated probabilities of 1+ ICU admissions')
+
+```
+
+
+#### Event probabilities (Outcome 1)
+
+The results show the difference in the estimated probability of ICU admission between the usual care and intervention phases.
+
+
+#### Event probabilities by hospital (Outcome 1)
+
+The results show the difference in the estimated probability of ICU admission between the usual care and intervention phases.
+
+```{r}
+load('bootstrap output/icu.rda') # from 5_bootstrapped_outputs.R
+
+diff_icu %>% 
+  flextable() %>% 
+  merge_v(j=c("Analysis")) %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  colformat_double(j=3:5, digits=3) %>%
+  width(width=c(1,1.5,1,1,1.5)) %>% 
+  set_caption('Probabilities')
+```
+
+\newpage
+
+## Analysis changing one clinical team (Outcome 1)
+
+One clinical team did not fully receive the intervention because they did not get the emails. Hence we use a sensitivity analysis to assess how this impacted the results. In this analysis the clinical team remains in the usual care phase and does not move over to the intervention.
+
+```{r}
+# alter data so that team stays in usual care
+dat_analysis_pp = mutate(dat_analysis, 
+            intervention = ifelse(clinical_team_fclty=='4', 0, intervention))
+icu.mod_pp <- glmer(status_icu ~ intervention + study_week + age_scaled + sex + (1|clinical_team_fclty), family=binomial('logit'), data=dat_analysis_pp)
+
+#
+ftab.icu_glmer_pp = summary(icu.mod_pp)$coefficients %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var='Parameter') %>% 
+  select(Parameter,Estimate,`Std. Error`) %>% 
+  mutate_at('Estimate',~exp(.)) 
+#
+icu_glmer_ci_pp = exp(confint.merMod(icu.mod_pp, method="Wald")) %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var="Parameter")
+#
+ftab.icu_glmer_pp = ftab.icu_glmer_pp %>% left_join(icu_glmer_ci_pp, by="Parameter")
+
+ftab.icu_glmer_pp = ftab.icu_glmer_pp %>% 
+  mutate('Odds ratio (95% CI)' = paste0(roundz(Estimate,2),' (',roundz(`2.5 %`,2),' to ',roundz(`97.5 %`,2),')')) %>%
+  select(Parameter,`Odds ratio (95% CI)`) %>% 
+  mutate_at("Parameter", ~ case_when(
+    .=='(Intercept)' ~ 'Intercept',
+    .=='intervention' ~ 'Intervention phase',
+    .=='study_week' ~ 'Calendar time (+1 week)',
+    .=='age_scaled' ~ 'Patient age (per 5 year increase; Mean = 85 years)',
+    .=='sexMale' ~ 'Sex: Male'))
+                 
+#               
+ftab.icu_glmer_pp = filter(ftab.icu_glmer_pp, Parameter!="Intercept") %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(3.2,1.5))
+
+ftab.icu_glmer_pp %>% set_caption('Binomial mixed effects regression: 1+ ICU admissions')
+
+```
+
+
+# Outcome 2: Hospital length of stay and hospital outcome
+
+#### Relevant text from the protocol (Outcome 2)
+
+* Outcome 2 was defined as length of hospital stay in days. Clinical endpoints were defined as discharged alive from hospital and death in hospital, from the date first recorded as high-risk CriSTAL/SPICT-positive.
+
+* Outcome 2 will be investigated using a competing risk, proportional hazards survival model with ‘discharged alive’ (separated by discharge location, e.g., to palliative care, nursing home) and ‘in-hospital death’ as competing endpoints for each patient’s hospital stay in hours (NOTE: final analysis defined hospital length of stay in days)
+
+* Cumulative incidence curves will be used to compare the event rates over time between the usual care exposure and Intervention phases. 
+
+* The survival analysis will adjust for potential confounders of patient age, sex and time spent in hospital for identified hospital episode prior to admission to enrolled clinical team.  
+
+* Additionally, the survival analysis will stratify by clinical teams to account for underlying differences between clinical teams.
+
+
+* Patients who remained in hospital during the transition from usual care to the intervention or at the end of the study were censored. 
+
+#### CI feedback during data processing (Outcome 2)
+
+* Patients who were transferred from the admitting study hospital to another facility for continuing care were censored at the time of discharge from the admitting study hospital.
+
+
+### Descriptive summary (Outcome 2)
+
+In this section, we report results from descriptive statistics, cumulative incidence functions and Cox proportional hazards regression. 
+
+Descriptive statistics are given in the next table.
+
+```{r}
+dat_analysis = mutate_at(dat_analysis,'clinical_team_fclty',~as.character(.))
+
+ftab_los = dat_analysis %>% group_by(Hospital,study_period,discharge_outcome) %>% summarise(n=n(),med=roundz(median(length_of_stay_days_c),1),q1=roundz(quantile(length_of_stay_days_c,.25),1),q3=roundz(quantile(length_of_stay_days_c,.75),1),.groups='drop')
+
+ftab_los = ftab_los %>% mutate(stat = paste0('n = ',format(n,big.mark=',',trim=T),'; ',med,' (',q1,' to ',q3,')')) %>%
+  select(Hospital,study_period,discharge_outcome,stat) %>% spread(discharge_outcome,stat) 
+
+ad = dat_analysis %>% group_by(study_period,discharge_outcome) %>% summarise(n=n(),med=roundz(median(length_of_stay_days_c),1),q1=roundz(quantile(length_of_stay_days_c,.25),1),q3=roundz(quantile(length_of_stay_days_c,.75),1),.groups='drop') %>% mutate(stat = paste0('n = ',format(n,big.mark=',',trim=T),'; ',med,' (',q1,' to ',q3,')')) %>% add_column('Hospital'='All',.before=1) %>% select(Hospital,study_period,discharge_outcome,stat) %>% spread(discharge_outcome,stat) 
+  
+  
+ftab_los = bind_rows(ftab_los,ad)  %>% rename('Study phase'=study_period) 
+
+
+ftab_los = ftab_los %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  merge_v(j=1) %>%
+  fontsize(size=9,part='all') %>% 
+  width(width=c(0.75,1.5,rep(1.75,3)))
+ftab_los %>% set_caption('Descriptive statistics: length of stay in days (n; Median (Q1 to Q3)) by hospital outcome')
+
+```
+
+In the figure below, we show cumulative probability plots for death and discharge by hospital. Outcomes are censored at 90 days from CriSTAL/SPICT identification - only `r sum(dat_analysis$length_of_stay_days_c>90)` hospital admissions were longer than 90 days. Clinical teams were specified as a stratification variable.
+
+* Cumulative probabilities are summarised as estimates with 95% CIs
+* Each study period is plotted as a different colour
+* Each discharge outcomes is plotted as a different line type.
+
+```{r, fig.cap='Cumulative probability plot - hospital length of stay and hospital outcome; censored at 90 days',fig.width=10,fig.height=6}
+
+dat_analysis = mutate(dat_analysis,
+                      status_los_sens = case_when(length_of_stay_days_c>90~0,
+                                                  length_of_stay_days_c<=90 & status_los=='censor' ~ 0,
+                                                  length_of_stay_days_c<=90 & status_los=='Discharged alive' ~ 1,
+                                                  length_of_stay_days_c<=90 & status_los=='Died in hospital' ~ 2),
+                      length_of_stay_days_c_sens = pmin(90,length_of_stay_days_c)) %>%
+  mutate_at('status_los_sens',~factor(.,0:2,labels=c('censor','Discharged alive','Died in hospital')))
+
+
+hospitals <- unique(dat_analysis$Hospital)
+mod.cif_los <- lapply(hospitals,function(x)
+  with(filter(dat_analysis,Hospital==x),cuminc(length_of_stay_days_c_sens,status_los_sens,group=intervention,strata=as.character(clinical_team_fclty),cencode='censor')))
+
+g<-lapply(1:3, function(x) ggcompetingrisks(mod.cif_los[[x]],
+                                            gnames = c('Usual care:Discharged alive','Intervention phase:Discharged alive','Usual care:Died in hospital','Intervention phase:Died in hospital'),
+                                            gsep=':',
+                                            xlab = 'Days since first recorded as high-risk CriSTAL or SPICT-positive',
+                                            ylab = 'Cumulative probability',
+                                            title = '',
+                                            legend.title='',
+                                            risk.table = TRUE,
+                                            conf.int = TRUE))
+names(g) <- hospitals
+
+# facet by hospital
+g.cif_los <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=name,colour=group,fill=group,linetype=event))+
+  geom_ribbon(alpha=.2)+
+  geom_path(size=1.25)+
+  facet_grid(~Hospital)+
+  scale_colour_manual(values=cbPalette)+scale_fill_manual(values=cbPalette)+
+  scale_x_continuous('Days since first recorded as high-risk CriSTAL or SPICT-positive',breaks=seq(0,90,10))+
+  expand_limits(y=1)+scale_y_continuous('Cumulative probability',breaks=seq(0,1,0.1))+g.theme
+
+g.cif_los
+```
+
+#### Separate plots for death and discharge
+
+The plots above rather squash the effect of death, hence we also include separate plots.
+
+##### Death
+
+```{r}
+#
+
+g.cif_los_a <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  filter(event=='Died in hospital') %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=name,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+
+  geom_path(size=1.25)+
+  facet_grid(~Hospital)+
+  scale_colour_manual(values=cbPalette)+
+  scale_fill_manual(values=cbPalette)+
+  scale_x_continuous('Days since first recorded as high-risk CriSTAL or SPICT-positive',breaks=seq(0,90,10))+
+  expand_limits(y=1)+
+  scale_y_continuous('Cumulative probability', breaks=seq(0, 0.15, 0.05), limits=c(0, 0.15))+
+  g.theme
+
+g.cif_los_a
+```
+
+
+##### Discharge
+
+```{r}
+g.cif_los_b <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  filter(event=='Discharged alive') %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=name,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+
+  geom_path(size=1.25)+
+  facet_grid(~Hospital)+
+  scale_colour_manual(values=cbPalette)+
+  scale_fill_manual(values=cbPalette)+
+  scale_x_continuous('Days since first recorded as high-risk CriSTAL or SPICT-positive',breaks=seq(0,90,10))+
+  expand_limits(y=1)+
+  scale_y_continuous('Cumulative probability', breaks=seq(0, 1, 0.2), limits=c(0, 1))+
+  g.theme
+
+g.cif_los_b
+```
+
+### Time-to-event modelling (Outcome 2)
+
+#### intention to treat analysis (Outcome 2)
+
+Length of stay and hospital outcome were modelled using Cox proportional hazards regression. Death and discharge alive were treated as competing risks. As per the primary outcome, independent variables were study period (usual care, Intervention phase), age at admission (years; scaled as per the primary outcome) and sex (Female, Male). Clinical team was included in the model as a stratification variable.
+
+Model estimates are reported as hazard ratios (HRs) with 95% CIs.
+
+* A hazard ratio greater than 1 means a shorter length of stay until discharge or death
+* A hazard ratio less than 1 means a longer length of stay until discharge or death
+
+The next table shows the results of the Cox model fitted to all hospitals.
+
+```{r}
+mod.los <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens) ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis, id=study_id)
+
+zph.los = cox.zph(mod.los, transform='identity')
+
+
+ftab.los_coxph = summary(mod.los)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome'=factor(event,levels=2:3,labels=mod.los$states[2:3]),
+         Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(`Hospital outcome`,Parameter,`Hazard ratio (95% CI)`) %>% spread(`Hospital outcome`,`Hazard ratio (95% CI)`)
+
+ftab.los_coxph %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5,1.5)) %>% set_caption('Cox regression output for hospital length of stay, all study hospitals')
+
+
+```
+
+
+Among patients who were discharged alive from hospital, there was insufficient evidence of Intervention phase influencing length of stay (HR: 1.01; 95% CI: 0.94 to 1.09), following adjustment for patient age (HR: 0.98; 95% CI: 0.95 to 1.01) and sex (HR: 0.9; 95% CI: 0.84 to 0.97). Adjustment for sex indicated that male patients tended to spend more time in hospital before being discharged alive from hospital, compared with female patients.
+
+Among patients who died in hospital, model results indicated that expected length of stay decreased during the intervention phase compared with the usual care phase (HR: 1.36; 95% CI: 1.06 to 1.75). The inclusion of age as a confounder indicated that older patients tended to have a shorter length of stay before death (HR: 1.13; 95% CI: 1.03 to 1.25). There was insufficient evidence of differences in length of stay between male and female patients who died in hospital (HR: 0.92; 95% CI: 0.73 to 1.16) as a potential confounder.
+
+
+
+#### Model assessment (Outcome 2)
+
+##### Baseline hazards (Outcome 2)
+
+Here we plot the baseline hazard in each clinical team. This is useful for checking the differences between hospitals (numbered facets). 
+
+```{r, fig.cap='Estimated baseline hazards by clinical team. A: Died in hospital; B: Discharged alive from hospital',fig.width=8,fig.height=12}
+hosp_teams = dat_analysis %>% count(Hospital,clinical_team_fclty)
+
+#
+mod.los_died <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens=='Died in hospital') ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis, id=study_id)
+mod.los_discharged <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens=='Discharged alive') ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis, id=study_id)
+
+bplot_died = basehaz(mod.los_died, centered=TRUE) %>% left_join(hosp_teams,by=c('strata'='clinical_team_fclty')) %>% 
+  mutate_at('strata',~paste0('Team ',.,' (',format(n,big.mark=' ',trim=T),')')) %>%
+  filter(time>=0) %>% 
+  ggplot(aes(x=time, y=hazard, col=strata)) +
+  geom_line() +
+  scale_color_hue('Team (number of patients)') +
+  scale_y_continuous(limits=c(0,1.5),breaks=seq(0,1.5,0.25)) + 
+  scale_x_continuous(limits=c(0,90),breaks=seq(0,90,10)) +
+  xlab('Time, days') +
+  ylab('Cumulative hazard') +
+  facet_grid(~Hospital) +
+  g.theme
+
+
+bplot_discharged = basehaz(mod.los_discharged, centered=TRUE) %>% left_join(hosp_teams,by=c('strata'='clinical_team_fclty')) %>% 
+  mutate_at('strata',~paste0('Team ',.,' (',format(n,big.mark=' ',trim=T),')')) %>%
+  ggplot(aes(x=time, y=hazard, col=strata)) +
+  geom_line() +
+  scale_color_hue('Team (number of patients)') +
+  scale_y_continuous(limits=c(0,6),breaks=seq(0,6,1)) + 
+  scale_x_continuous(breaks=seq(0,90,10)) +
+  xlab('Time, days') +
+  ylab('Cumulative hazard') +
+  facet_grid(~Hospital) +
+  g.theme
+
+ggarrange(bplot_died,bplot_discharged,nrow=2,ncol=1,common.legend = T,align='hv',labels=LETTERS[1:2])
+
+```
+
+##### Non-proportionality (Outcome 2)
+
+Findings from model assessment suggested that age had a non-proportional effect on length of stay ending with death in hospital. The form of this effect indicated that age played a role as length of stay increased, up to 30 days. This relationship is shown in the figure below.
+
+```{r,fig.cap='Schoenfeld residual plots for age at hospital admission. Left: Discharge, Right: Death (scaled)',fig.width=10,fig.height=5}
+par(mfrow=c(1,2))
+plot(zph.los[2],xlab='Length of stay, days',lwd=2,main="Discharged alive");abline(h=0,col=2,lwd=2);grid()
+plot(zph.los[5],xlab='Length of stay, days',lwd=2,main="Died in Hospital");abline(h=0,col=2,lwd=2);grid()
+
+```
+
+##### Checking for influential observations (Outcome 2)
+
+The next figure summarises changes in regression parameters (DFBETA) from excluding one observation at a time (leave-one-out analysis). Note that the observation ID on the x-axis comprises both individuals who were discharged alive, or who died in hospital.
+
+Results indicate the possibility of sensitivity in the estimate of Intervention phase, among patients who died in hospital. We will explore the role of seasonality on influential observations in the sensitivity analysis.
+
+```{r fig.cap='DFBETA plots for hospital length of stay and hospital outcome. A: Died in hospital, B: Discharged alive from hospital', fig.height=9, fig.width=8}
+
+influence_los.died = ggcoxdiagnostics(fit=mod.los_died, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+
+influence_los.discharged = ggcoxdiagnostics(fit=mod.los_discharged, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+
+ggarrange(influence_los.died,influence_los.discharged,nrow=2,ncol=1,labels=LETTERS[1:2])
+
+```
+
+#### Results by hospital (Outcome 2)
+
+The results below are from separate Cox models in each hospital. Estimated hazard ratios for Intervention phase vary between the hospitals.
+
+```{r}
+mod.los_h <- lapply(hospitals,function(x) coxph(Surv(length_of_stay_days_c_sens, status_los_sens) ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis, subset=(Hospital==x), id=study_id))
+
+zph.los_h = lapply(1:3, function(x) cox.zph(mod.los_h[[x]],transform='identity'))
+
+
+ftab.los_coxph_h = lapply(1:3,function(x)
+  summary(mod.los_h[[x]])$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome'=factor(event,levels=2:3,labels=mod.los$states[2:3]),
+         Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(`Hospital outcome`,Parameter,`Hazard ratio (95% CI)`))
+  
+  #%>% spread(`Hospital outcome`,`Hazard ratio (95% CI)`))
+names(ftab.los_coxph_h)<-hospitals
+
+ftab.los_coxph_h = bind_rows(ftab.los_coxph_h,.id='Hospital') %>% spread(Hospital,`Hazard ratio (95% CI)`)
+
+
+ftab.los_coxph_h %>% flextable() %>% merge_v(j='Hospital outcome') %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1.25,2.4,1.25,1.25,1.25)) %>% set_caption('Cox regression output for hospital length of stay, all study hospitals')
+
+```
+
+Model assessment results indicated that non-proportionality due to age was strongest for GCUH (next figure).
+
+```{r,fig.cap='Schoenfeld residual plots for age at hospital admission (scaled) by hospital',fig.width=15,fig.height=10}
+names(zph.los_h)<-hospitals
+par(mfrow=c(1,3))
+plot(zph.los_h[[1]][5],xlab='Length of stay, days',lwd=2,main=hospitals[1]);abline(h=0,col=2,lwd=2);grid()
+plot(zph.los_h[[2]][5],xlab='Length of stay, days',lwd=2,main=hospitals[2]);abline(h=0,col=2,lwd=2);grid()
+plot(zph.los_h[[3]][5],xlab='Length of stay, days',lwd=2,main=hospitals[3]);abline(h=0,col=2,lwd=2);grid()
+
+```
+
+
+
+#### Sensitivity analysis (Outcome 2)
+
+As a sensitivity analysis, we accounted for seasonality effects in the Cox model. 
+
+* Rationale: to account for longer lengths of hospital stay depending on the month of the year. 
+* In the model, sine and cosine functions were included as linear fixed effects in Cox models.
+* Each function used the fraction of the year corresponding to each patient's hospital admission date (using the season R package).
+
+Below are the model results for all hospital combined, after adding seasonality effects. Including seasonal effects impacted the hazard ratios for Intervention phase.
+
+```{r}
+#dat_analysis = mutate(dat_analysis,admit_month=factor(month(admit_date),levels=1:12))
+mod.los_sens <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens) ~ intervention + age_scaled + sex + sinw +cosw , data=dat_analysis,id=study_id)
+
+ftab.los_coxph_sens = summary(mod.los_sens)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome'=factor(event,levels=2:3,labels=mod.los_sens$states[2:3]),
+         Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='sinw' ~ 'Seasonality: Sine function',
+           term=='cosw' ~ 'Seasonality: Cosine function'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(`Hospital outcome`,Parameter,`Hazard ratio (95% CI)`) %>% spread(`Hospital outcome`,`Hazard ratio (95% CI)`)
+
+ftab.los_coxph_sens %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5,1.5)) %>% set_caption('Cox regression output for hospital length of stay, all study hospitals; sensitivity analysis')
+
+
+```
+
+In the next figure, we show the estimated seasonal effect on the hazard ratios for death and discharge. The estimated seasonal effect for died in hospital indicated shorter length of stay during Summer compared with Winter.
+
+```{r fig.cap='Estiamated Hazard ratio based on time of year, hospital length of stay',fig.width=8,fig.height=5}
+seasonal_est = summary(mod.los_sens)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>% filter(grepl('sinw|cosw',term)) %>%
+separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome' = factor(event,levels=2:3, labels=mod.los_sens$states[2:3])) %>% select(`Hospital outcome`,term,`exp(coef)`) %>% rename('est'=`exp(coef)`) %>% spread(term,est)
+
+
+seasonal_est = mutate(seasonal_est,admit_frac=list(seq(0,1,0.01))) %>% unnest(cols=admit_frac) %>% 
+  mutate(out = exp(log(sinw)*sin(2*pi*admit_frac)+log(cosw)*cos(2*pi*admit_frac)),
+         admit_day = season::invyrfraction(admit_frac,type='monthly',text=F))
+
+
+ggplot(seasonal_est,aes(x=admit_day,y=out,group=`Hospital outcome`,colour=`Hospital outcome`))+geom_line(size=1)+
+  scale_x_continuous('Calendar month (Jan - Dec)',breaks=1.5:13.5,labels=c(as.character(month(1:12,label=T)),''))+
+  scale_y_continuous('Hazard ratio',breaks=seq(0,1.5,0.05))+
+  scale_colour_manual(values=cbPalette)+g.theme
+
+```
+
+
+The next plot shows results from checking influential observations. Adding seasonal terms appears to have reduced changes in regression parameters as part of leave-one-out analysis. 
+
+```{r fig.cap='DFBETA plots for hospital length of stay and hospital outcome. A: Died in hospital, B: Discharged alive from hospital', fig.height=9, fig.width=8}
+
+mod.los_sens_died <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens=="Died in hospital") ~ intervention + age_scaled + sex + sinw +cosw , data=dat_analysis,id=study_id)
+mod.los_sens_discharged <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens=="Discharged alive") ~ intervention + age_scaled + sex + sinw +cosw , data=dat_analysis,id=study_id)
+
+influence_los.died = ggcoxdiagnostics(fit=mod.los_sens_died, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+
+influence_los.discharged = ggcoxdiagnostics(fit=mod.los_sens_discharged, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+
+ggarrange(influence_los.died,influence_los.discharged,nrow=2,ncol=1,labels=LETTERS[1:2])
+
+```
+
+
+#### Overall absolute differences (Outcome 2)
+
+The next table shows the estimated 90-day probabilities of death and discharge, by study phase. Event probabilities and confidence intervals were estimated from bootstrapping.
+
+```{r}
+#includes all hospitals and by site, from ?.R
+load('bootstrap output/length of stay.rda') 
+
+risk_difference_los %>% 
+  flextable() %>% 
+  merge_v(j=c("Analysis","Hospital outcome")) %>% 
+  theme_box() %>% fontsize(size=9,part='all') %>% 
+  width(width=c(1,1.5,1,1,1.5)) %>% 
+  set_caption('90-day probabilities of death and discharge')
+
+
+```
+
+The next table shows estimated differences in length of stay for intention to treat and sensitivity analyses. For the sensitivity analysis, estimates were obtained by setting calendar time to the study end date (6 June 2021).
+
+
+```{r}
+rmst_difference_los %>% flextable() %>% merge_v(j="Analysis") %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1,1.5,1,1,2)) %>% set_caption('Estimated hospital length of stay for usual care and Intervention phases')
+```
+
+#### Absolute differences by hospital (Outcome 2)
+
+The final two tables show the same estimates by study phase and hospital.
+
+```{r}
+load('bootstrap output/length of stay by hospital.rda') #includes all hospitals and by site
+
+risk_difference_los_h %>% 
+  flextable() %>% 
+  merge_v(j=c("Analysis","Hospital outcome")) %>% 
+  theme_box() %>% fontsize(size=9,part='all') %>% 
+  width(width=c(1,1.5,1,1,1,1.5)) %>% 
+  set_caption('90-day probabilities of death and discharge')
+
+
+```
+
+\newline
+
+```{r}
+rmst_difference_los_h %>% flextable() %>% merge_v(j="Analysis") %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1,1.5,1,1,1,2)) %>% set_caption('Estimated hospital length of stay for usual care and Intervention phases')
+```
+
+
+## Analysis changing one clinical team (Outcome 2)
+
+One clinical team did not fully receive the intervention because they did not get the emails. Hence we use a sensitivity analysis to assess how this impacted the results. In this analysis the clinical team remains in the usual care phase and does not move over to the intervention.
+
+```{r}
+# remake data
+dat_analysis_pp = mutate(dat_analysis, 
+            intervention = ifelse(clinical_team_fclty=='4', 0, intervention))
+# run model
+mod.los_pp <- coxph(Surv(length_of_stay_days_c_sens, status_los_sens) ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis_pp, id=study_id)
+
+# make table
+ftab.los_coxph_pp = summary(mod.los_pp)$conf.int %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var='term') %>%
+  separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome'=factor(event,levels=2:3,labels = mod.los_pp$states[2:3]),
+         Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(`Hospital outcome`,Parameter,`Hazard ratio (95% CI)`) %>% 
+  spread(`Hospital outcome`,`Hazard ratio (95% CI)`)
+
+ftab.los_coxph_pp %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(2.5,1.5,1.5)) %>% 
+  set_caption('Cox regression output for hospital length of stay, all study hospitals')
+
+```
+
+
+# Outcome 3: Time to hospital re-admission
+
+### Relevent text from the protocol (Outcome 3)
+
+* Outcome 3 was defined as the time in days to re-admission to any Queensland public hospital, within 12 weeks from the date of discharge.
+
+* Analysis will use a proportional hazards survival model for time to re-admission to any Queensland public hospital within the first 12 weeks after the discharge of each hospital episode. 
+
+* The analysis will only include patients discharged alive from each episode. 
+
+* Patients who died after leaving hospital or were not re-admitted within the 12 weeks are treated as censored observations at day of death, or at the end of the 12 weeks follow-up period, respectively. 
+
+* The estimated cumulative incidence curves will be compared to investigate differences in re-admission rates over time between the usual care exposure and Intervention phases. 
+
+* Each clinical team will be a separate stratum in the survival analysis.
+
+### Descriptive summary (Outcome 3)
+
+
+```{r}
+ftab_readmit = filter(dat_analysis,discharge_outcome=='Discharged alive') %>% 
+  group_by(Hospital,study_period) %>% 
+  summarise(n = sum(status_readmit=="Readmitted to public hospital"),
+            p = roundz(100*mean(status_readmit=="Readmitted to public hospital"),1),.groups='drop') %>% 
+  mutate('Re-admissions to hospital'=paste0(n,' (',p,')')) %>% 
+  select(-n,-p)
+
+ad = filter(dat_analysis,discharge_outcome=='Discharged alive') %>% 
+  group_by(study_period) %>% 
+  summarise(n=sum(status_readmit=="Readmitted to public hospital"),
+            p=roundz(100*mean(status_readmit=="Readmitted to public hospital"),1),.groups='drop') %>%
+  mutate('Re-admissions to hospital'=paste0(n,' (',p,')')) %>% 
+  select(-n,-p) %>% 
+  add_column('Hospital'='All',.before=1)
+
+ftab_readmit = bind_rows(ftab_readmit,ad) 
+                                                                                                          
+ftab_readmit_d =  filter(dat_analysis,discharge_outcome=='Discharged alive',status_readmit=="Readmitted to public hospital") %>% group_by(Hospital,study_period) %>%summarise(med=roundz(median(discharge_to_readmit_days_c),1),q1=roundz(quantile(discharge_to_readmit_days_c,.25),1),q3=roundz(quantile(discharge_to_readmit_days_c,.75),1),.groups='drop') %>% mutate('Time to re-admission, days' = paste0(med,' (',q1,' to ',q3,')')) %>% select(-med,-q1,-q3)  
+
+ad = filter(dat_analysis,discharge_outcome=='Discharged alive',status_readmit=="Readmitted to public hospital") %>% group_by(study_period) %>%summarise(med=roundz(median(discharge_to_readmit_days_c),1),q1=roundz(quantile(discharge_to_readmit_days_c,.25),1),q3=roundz(quantile(discharge_to_readmit_days_c,.75),1),.groups='drop') %>% mutate('Time to re-admission, days' = paste0(med,' (',q1,' to ',q3,')')) %>% select(-med,-q1,-q3) %>% add_column('Hospital'='All',.before=1)
+
+ftab_readmit_d = bind_rows(ftab_readmit_d,ad) 
+                                         
+
+ftab_readmit = inner_join(ftab_readmit,ftab_readmit_d,by=c('Hospital','study_period')) %>%
+  gather(Outcome,value,-Hospital,-study_period) %>% spread(study_period,value)
+
+ftab_readmit = ftab_readmit %>% flextable() %>% 
+  merge_v(j = 'Hospital') %>%
+  theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(0.75,2.25,1.75,1.75))
+
+
+ftab_readmit %>% set_caption('Descriptive statistics -  number of readmissions, n (%), and days to readmission, up to 12 weeks following hospital discharge, Median (Q1 to Q3)')
+
+```
+
+In the figure below, we show cumulative probability plots for readmission up to twelve weeks.  Clinical teams were specified as a stratification variable.
+
+
+```{r fig.cap='Cumulative probability plot - readmission to a public hospital (A), death outside of hospital (B), within 12 weeks of hospital discharge',fig.width=10,fig.height=8}
+mod.cif_readmit <- lapply(hospitals,function(x)
+  with(filter(dat_analysis,Hospital==x,discharge_outcome=='Discharged alive'),cuminc(discharge_to_readmit_days_c,status_readmit,strata=as.character(clinical_team_fclty),group=intervention,cencode='censor')))
+
+g<-lapply(1:3, function(x) ggcompetingrisks(mod.cif_readmit[[x]],
+                                            gnames = c('Usual care:Readmitted','Intervention phase:Readmitted','Usual care:Died','Intervention phase:Died'),
+                                            gsep=':',
+                                            xlab = 'Days since discharge alive from hospital',
+                                            ylab = 'Cumulative probability',
+                                            title = '',
+                                            legend.title='',
+                                            risk.table = TRUE,
+                                            conf.int = TRUE))
+
+names(g) <- hospitals
+
+#facet by site and outcome
+g.cif_readmit_a <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  filter(event=='Readmitted') %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=group,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+geom_path()+facet_grid(~Hospital)+
+  scale_x_continuous('Days since discharge alive from hospital',breaks=seq(0,84,7))+
+  scale_y_continuous('Cumulative probability',breaks=seq(0,1,0.1))+theme_bw()+
+  scale_colour_manual(values=cbPalette)+scale_fill_manual(values=cbPalette)+g.theme+ggtitle('Readmitted')
+
+g.cif_readmit_b <- lapply(g,function(x) x$data) %>% bind_rows(.id='site') %>%
+  filter(event=='Died') %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=group,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+geom_path()+facet_grid(~site)+
+  scale_x_continuous('Days since discharge alive from hospital',breaks=seq(0,84,7))+
+  scale_y_continuous('Cumulative probability',breaks=seq(0,0.1,0.02))+
+   scale_colour_manual(values=cbPalette)+scale_fill_manual(values=cbPalette)+g.theme+ggtitle('Died outside of hospital')
+
+g.cif_readmit = ggarrange(g.cif_readmit_a,g.cif_readmit_b,nrow=2,ncol=1,align='hv',common.legend = T)
+
+g.cif_readmit
+
+```
+
+### Time-to-event modelling (Outcome 3)
+
+#### intention to treat analysis (Outcome 3)
+
+Time to readmission was modelled using Cox proportional hazards regression to examine the difference between usual care and Intervention phases. Clinical teams were included as strata. Patient age and sex were included as covariates, as per previous analyses. We assumed a binary variable for study period (usual care, Intervention phase).
+
+The next table shows the results of the Cox model fitted to all hospitals.
+
+```{r}
+mod.readmit <- coxph(Surv(discharge_to_readmit_days_c, status_readmit=="Readmitted to public hospital") ~ intervention + age_scaled + sex + strata(clinical_team_fclty), 
+                     subset=(discharge_outcome=='Discharged alive'),
+                     data=dat_analysis)
+
+zph.readmit = cox.zph(mod.readmit,transform='identity')
+
+
+ftab.readmit_coxph = summary(mod.readmit)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`) 
+
+ftab.readmit_coxph %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5)) %>% set_caption('Cox regression output for time to readmission, all study hospitals')
+
+```
+
+* Intervention phase was associated with a reduced hazard of readmission (longer time from discharge to readmission).
+* Increased age was associated with reduced hazard of readmission.
+* Males may have been more likely to be readmitted, compared with females.
+
+
+#### Model assessment (Outcome 3)
+
+##### Baseline hazards (Outcome 3)
+
+The next figure shows estimated baseline hazards by clinical team. The numbers in round brackets in the legend are the number of patients.
+
+```{r, fig.cap='Estimated baseline hazards by clinical team, time to readmission',fig.width=8}
+hosp_teams = dat_analysis %>% count(Hospital,clinical_team_fclty)
+
+bplot = basehaz(mod.readmit, centered=TRUE) %>% left_join(hosp_teams,by=c('strata'='clinical_team_fclty')) %>% 
+  mutate_at('strata',~paste0('Team ',.,' (',format(n,big.mark=' ',trim=T),')')) %>%
+  filter(time>=0) %>% 
+  ggplot(aes(x=time, y=hazard, col=strata)) +
+  geom_line() +
+  scale_color_hue('Team (number of patients)') +
+  scale_y_continuous(limits=c(0,1.5),breaks=seq(0,1.5,0.25)) + 
+  scale_x_continuous(limits=c(0,84),breaks=seq(0,84,14)) +
+  xlab('Time, days') +
+  ylab('Cumulative hazard') +
+  facet_grid(~Hospital) +
+  g.theme
+
+bplot
+
+```
+
+##### Non-proportionality (Outcome 3)
+
+The next figure shows residual plots for Intervention phase, age and sex. Results indicated that a binary intervention effect may be insufficient, as Intervention phase potentially decreased the longer patients spent out of hospital.
+
+See sensitivity analyses for additional analysis of Intervention phase.
+
+```{r,fig.cap='Schoenfeld residual plots for all covariates included in the time to readmission Cox model',fig.width=15,fig.height=10}
+par(mfrow=c(1,3))
+plot(zph.readmit[1],xlab='Days since hospital discharge',lwd=2,main='Intervention phase');abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit[2],xlab='Days since hospital discharge',lwd=2,main='Age');abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit[3],xlab='Days since hospital discharge',lwd=2,main='Sex: Male');abline(h=0,col=2,lwd=2);grid()
+
+```
+
+##### Checking for influential observations (Outcome 3)
+
+The next figure shows the results from our leave-one-out analysis. Similar to previous outcomes, we observed a pattern in DFBETA for Intervention phase.
+
+```{r fig.cap='DFBETA plots for time to readmission', fig.height=9, fig.width=8}
+
+influence_readmit = ggcoxdiagnostics(fit=mod.readmit, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+dfbeta_readmit = influence_readmit$data %>%
+  mutate(Parameter = case_when(
+           covariate=='intervention' ~ 'Intervention phase',
+           covariate=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           covariate=='sexMale' ~ 'Sex = Male')) 
+
+ggplot(dfbeta_readmit,aes(x=xval,y=res))+geom_point()+
+  geom_hline(aes(yintercept=0),colour='red',size=1.5,linetype='dashed')+
+  facet_grid(Parameter ~ .) + 
+  ylab('Residuals (type = dfbeta)')+ xlab('Observation ID') + g.theme
+
+
+```
+
+#### Adjust for season (Outcome 3)
+
+```{r}
+# added by AGB
+mod.readmit.season <- coxph(Surv(discharge_to_readmit_days_c, status_readmit=="Readmitted to public hospital") ~ intervention + age_scaled + sex + strata(clinical_team_fclty) + sinw + cosw, 
+                     subset=(discharge_outcome=='Discharged alive'),
+                     data=dat_analysis)
+
+zph.readmit.season = cox.zph(mod.readmit.season, transform='identity')
+
+ftab.readmit_coxph_season = summary(mod.readmit.season)$conf.int %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='sinw' ~ 'Seasonality: Sine function',
+           term=='cosw' ~ 'Seasonality: Cosine function'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`) 
+
+ftab.readmit_coxph_season %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(2.5,1.5)) %>% set_caption('Cox regression output for time to readmission, all study hospitals, adjusted for season')
+
+
+
+```
+
+#### Results by hospital (Outcome 3)
+
+The results below are from separate Cox models in each hospital. Estimated hazard ratios for Intervention phase vary between the hospitals. 
+
+```{r}
+mod.readmit_h <- lapply(hospitals,function(x) coxph(Surv(discharge_to_readmit_days_c, status_readmit=="Readmitted to public hospital") ~ intervention + age_scaled + sex + strata(clinical_team_fclty), data=dat_analysis,subset=(discharge_outcome=='Discharged alive' & Hospital==x),id=study_id))
+
+zph.readmit_h = lapply(1:3, function(x) cox.zph(mod.readmit_h[[x]],transform='identity'))
+
+ftab.readmit_coxph_h = lapply(1:3,function(x)
+  summary(mod.readmit_h[[x]])$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+    mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`))
+  
+names(ftab.readmit_coxph_h)<-hospitals
+
+ftab.readmit_coxph_h = bind_rows(ftab.readmit_coxph_h,.id='Hospital') %>% spread(Hospital,`Hazard ratio (95% CI)`)
+
+ftab.readmit_coxph_h %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.4,1.25,1.25,1.25)) %>% set_caption('Cox regression output for time to readmission by hospital')
+
+```
+
+Model assessment plots are shown in the next figure. Results indicate that evidence of non-proportionality for Intervention phase is strongest at Hospital Z.
+
+```{r,fig.cap='Schoenfeld residual plots for all covariates included in the time to readmission Cox model',fig.width=15,fig.height=15}
+par(mfrow=c(3,3))
+#hospital 1
+plot(zph.readmit_h[[1]][1],xlab='Days since hospital discharge',lwd=2,main=paste0('Intervention phase: ',hospitals[1]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit_h[[1]][2],xlab='Days since hospital discharge',lwd=2,main=paste0('Age: ',hospitals[1]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit_h[[1]][3],xlab='Days since hospital discharge',lwd=2,main=paste0('Sex: Male  ',hospitals[1]));abline(h=0,col=2,lwd=2);grid()
+
+#hospital 2
+plot(zph.readmit_h[[2]][1],xlab='Days since hospital discharge',lwd=2,main=paste0('Intervention phase: ',hospitals[2]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit_h[[2]][2],xlab='Days since hospital discharge',lwd=2,main=paste0('Age: ',hospitals[2]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit_h[[2]][3],xlab='Days since hospital discharge',lwd=2,main=paste0('Sex: Male  ',hospitals[2]));abline(h=0,col=2,lwd=2);grid()
+
+#hospital 3
+plot(zph.readmit_h[[3]][1],xlab='Days since hospital discharge',lwd=2,main=paste0('Intervention phase: ',hospitals[3]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit_h[[3]][2],xlab='Days since hospital discharge',lwd=2,main=paste0('Age: ',hospitals[3]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.readmit_h[[3]][3],xlab='Days since hospital discharge',lwd=2,main=paste0('Sex: Male  ',hospitals[3]));abline(h=0,col=2,lwd=2);grid()
+
+```
+
+#### Sensitivity analysis (Outcome 3)
+
+We performed the following sensitivity analyses
+
+* Added a seasonal effect, as per Outcome 2
+
+* Modelled Intervention phase as a linear, time-dependent covariate. This allowed for the association between Intervention phase and the hazard of readmission to increase (decrease) based on days since hospital discharge.
+
+
+
+##### Time-dependent effect for Intervention phase (Outcome 3)
+
+The next table shows the results of the Cox model fitted to all hospitals, after modelling Intervention phase as linear, time-dependent covariate.
+
+```{r}
+mod.readmit_tt <- coxph(Surv(discharge_to_readmit_days_c, status_readmit=="Readmitted to public hospital") ~ intervention + tt(intervention) + age_scaled + sex + strata(clinical_team_fclty), 
+                     subset=(discharge_outcome=='Discharged alive'),
+                     data=dat_analysis,tt = function(x, t, ...) x * (t))
+
+ftab.readmit_coxph_tt = summary(mod.readmit_tt)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase (intercept)',
+           term=='tt(intervention)' ~ 'Intervention phase (slope)',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,3),' (',roundz(`lower .95`,3),' to ',roundz(`upper .95`,3),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`) 
+ftab.readmit_coxph_tt %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5)) %>% set_caption('Cox regression output for time to readmission, all study hospitals; Intervention phase as a time-dependent covariate')
+
+```
+
+Results indicated: 
+
+* Intervention phase had a protective effect against readmission the longer patients remained out of hospital. However, the magnitude of the effect was small (HR: 0.993 (0.988 to 0.997)). 
+* Increased patient age was associated with a reduced hazard of readmission (longer time to readmission; HR: 0.95; 95% CI: 0.91 to 0.99). 
+* Some evidence that male patients were more likely to be readmission within 12 weeks of discharge (HR: 1.1; 95% CI: 1 to 1.2).
+
+Model assessment of the revised Intervention phase effect are shown in the next figure.
+
+```{r,fig.width=10,fig.height=8,fig.cap="Marginal effects for Intervention phase on time to readmission. The yellow line shows the estimated effect for study phase, assuming a binary effect (intention to treat). The black line shows the partial effect of age estimated from model (Schoenfeld) residuals. The blue line shows the estimated effect when study phase is treated as a time-dependent, linear effect."}
+par(mfrow=c(1,1))
+plot(zph.readmit[1],resid=F,xaxt="n",xlab='Days since hospital discharge',col=cbPalette[1],lwd=2);grid()
+axis(1, at = seq(0, 84, by = 7))
+abline(h=coef(mod.readmit)[1],col=cbPalette[2],lwd=2)
+abline(coef(mod.readmit_tt)[1:2], lwd=2, col=cbPalette[3])
+legend(0, -.6, legend=c("Estimated intervention effect from residuals (95% CI)", "Binary fit assumed (intention to treat)","Time-dependent effect assumed (linear)"),col=cbPalette[1:3], lwd=2, cex=0.8)
+
+```
+
+##### Seasonality (Outcome 3)
+
+In this analysis, we included smoothed sinusoidal and cosine terms to model potential seasonal effects. 
+
+Results are shown in the next table. Intervention phase was treated as a time-independent covariate.
+
+```{r}
+mod.readmit_sens <- coxph(Surv(discharge_to_readmit_days_c, status_readmit=="Readmitted to public hospital") ~ intervention + tt(intervention) + age_scaled + sex + sinw + cosw + strata(clinical_team_fclty), 
+                     subset=(discharge_outcome=='Discharged alive'),
+                     data=dat_analysis,tt = function(x, t, ...) x * (t))
+
+ftab.readmit_sens = summary(mod.readmit_sens)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase (intercept)',
+           term=='tt(intervention)' ~ 'Intervention phase (slope)',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='sinw' ~ 'Seasonality: Sine function',
+           term=='cosw' ~ 'Seasonality: Cosine function'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,3),' (',roundz(`lower .95`,3),' to ',roundz(`upper .95`,3),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`) 
+
+ftab.readmit_sens %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5)) %>% set_caption('Cox regression output for time to readmission, all study hospitals; sensitivity analysis')
+```
+
+Estimated hazard ratios for Intervention phase (intercept and slope) were impacted after including seasonal terms.
+
+In the next figure, we show the estimated seasonal effect on the hazard ratio of readmission.  The estimated seasonal effect shows a reduced hazard of readmission during the winter months (i.e., longer time to hospital readmission). Adjusting for season had a minor impact on the intercept term for Intervention phase, but did not greatly change the effect of the intervention over time (the slope).
+
+```{r fig.cap='Estiamated Hazard ratio based on time of year, time to readmission',fig.width=8,fig.height=5}
+seasonal_est = summary(mod.readmit_sens)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>% filter(grepl('sinw|cosw',term)) %>%
+  select(term,`exp(coef)`) %>% rename('est'=`exp(coef)`) %>% spread(term,est)
+
+seasonal_est = mutate(seasonal_est,admit_frac=list(seq(0,1,0.01))) %>% unnest(cols=admit_frac) %>% 
+  mutate(out = exp(log(sinw)*sin(2*pi*admit_frac)+log(cosw)*cos(2*pi*admit_frac)),
+         admit_day = season::invyrfraction(admit_frac,type='monthly',text=F))
+
+ggplot(seasonal_est,aes(x=admit_day,y=out,group=1))+geom_line(size=1)+
+  scale_x_continuous('Calendar month (Jan - Dec)',breaks=1.5:13.5,labels=c(as.character(month(1:12,label=T)),''))+
+  scale_y_continuous('Hazard ratio',breaks=seq(0,1.5,0.05))+
+  scale_colour_manual(values=cbPalette)+g.theme
+
+
+```
+
+In the next figure, we show the results of checking for influential observations, after accounting for seasonality and a time-dependent intervention effect. Adding seasonal terms appeared to increase the impact of influential observations on parameter estimates.
+
+```{r fig.cap='DFBETA plots for time to readmission, sensitivity analysis', fig.height=9, fig.width=8}
+
+influence_readmit = ggcoxdiagnostics(fit=mod.readmit_sens, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1)
+dfbeta_readmit = influence_readmit$data %>%
+  mutate(Parameter = case_when(
+           covariate=='intervention' ~ 'Intervention phase (intercept)',
+           covariate=='tt(intervention)' ~ 'Intervention phase (slope)',
+           covariate=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           covariate=='sexMale' ~ 'Sex = Male',
+           covariate=='sinw' ~ 'Seasonality: Sine function',
+           covariate=='cosw' ~ 'Seasonality: Cosine function'))
+
+ggplot(dfbeta_readmit,aes(x=xval,y=res))+geom_point()+
+  geom_hline(aes(yintercept=0),colour='red',size=1.5,linetype='dashed')+
+  facet_wrap(~Parameter,ncol=3,nrow=2) +
+  scale_x_continuous('Observation ID',n.breaks=4)+
+  ylab('Residuals (type = dfbeta)')+ xlab('Observation ID') + g.theme
+
+
+```
+
+#### Overall absolute differences (Outcome 3)
+
+The next table shows the estimated 84-day (12 week) probabilities of readmission, by study phase.
+
+```{r}
+load('bootstrap output/hospital readmission.rda') #includes all hospitals and by site
+
+risk_difference_readmit %>% 
+  flextable() %>% 
+  merge_v(j="Analysis") %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(2,1,1,1.5)) %>% 
+  set_caption('90-day probabilities of readmission to a public hospital')
+
+```
+
+\newline
+
+The next table shows estimated times to hospital readmission, by study phase.
+
+```{r}
+rmst_difference_readmit %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1,1,1,2)) %>% set_caption('Estimated time to readmission for usual care and Intervention phases')
+```
+
+\newline
+
+#### Overall absolute differences by hospital (Outcome 3)
+
+The final tables show the same estimates by study phase and hospital.
+
+```{r}
+# includes all hospitals and by site, from 5_bootstrapped_outputs.R
+load('bootstrap output/hospital readmission by hospital.rda') 
+
+risk_difference_readmit_h = mutate(risk_difference_readmit_h, 
+                                   Hospital = as.character(Hospital))
+
+
+risk_difference_readmit_h %>% 
+  flextable() %>% 
+  merge_v(j="Analysis") %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(2,1,1,1,1.5)) %>% 
+  set_caption('90-day probabilities of readmission to a public hospital')
+
+```
+
+\newline
+
+
+```{r}
+rmst_difference_readmit_h %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1,1,1,1,2)) %>% set_caption('Estimated time to readmission for usual care and Intervention phases')
+```
+
+### Analysis changing one clinical team (Outcome 3)
+
+One clinical team did not fully receive the intervention because they did not get the emails. Hence we use a sensitivity analysis to assess how this impacted the results. In this analysis the clinical team remains in the usual care phase and does not move over to the intervention.
+
+```{r}
+# 
+
+mod.readmit_pp <- coxph(Surv(discharge_to_readmit_days_c, status_readmit=="Readmitted to public hospital") ~ intervention + age_scaled + sex + strata(clinical_team_fclty), 
+                     subset=(discharge_outcome=='Discharged alive'),
+                     data=dat_analysis_pp)
+
+ftab.readmit_coxph_pp = summary(mod.readmit_pp)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`) 
+
+ftab.readmit_coxph_pp %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(2.5,1.5)) %>% 
+  set_caption('Cox regression output for time to readmission, all study hospitals, per protocol')
+```
+
+
+\newpage
+
+# Outcome 7: Time to first medical emergency call
+
+### Relevant text from the protocol (Outcome 7)
+
+* Outcome 7 was defined as the time in days from the date first recorded as high-risk CriSTAL/SPICT-positive to the first medical emergency call (MET call) during the same hospital admission. 
+
+* Outcome 7 will be analysed using a competing-risk, proportional hazards model for time to first medical emergency calls with hospital discharge and in-hospital deaths as competing events, stratified by clinical teams. 
+
+* An indicator variable of study phase (usual care exposure or Intervention phase) will be used to estimate the intervention effect on the time to first medical emergency call. 
+
+* We will compare the cumulative incidence curves to assess for differences in rates over time across the two phases.
+
+### Descriptive summary (Outcome 7)
+
+Descriptive statistics are given in the next table.
+
+```{r}
+
+ftab_met_n = dat_analysis %>% group_by(Hospital,study_period,status_met) %>% summarise(n=n(),.groups='drop_last') %>% mutate(perc=roundz(100*n/sum(n),1),cell=paste0(n,' (',perc,'%)')) %>% select(Hospital,study_period,status_met,cell)
+
+ad = dat_analysis %>% group_by(study_period,status_met) %>% summarise(n=n(),.groups='drop_last') %>% mutate(perc=roundz(100*n/sum(n),1),cell=paste0(n,' (',perc,'%)')) %>% select(study_period,status_met,cell) %>% add_column('Hospital'='All',.before=1)
+
+ftab_met_n = bind_rows(ftab_met_n,ad)
+
+ftab_met_time = filter(dat_analysis,status_met=="MET call") %>% group_by(Hospital,study_period) %>% summarise(n=n(),med=roundz(median(screening_to_met_days),1),q1=roundz(quantile(screening_to_met_days,.25),1),q3=roundz(quantile(screening_to_met_days,.75),1),.groups='drop') %>% mutate(cell = paste0('n = ',n,'; ',med,' (',q1,' to ',q3,')')) %>%
+  select(Hospital,study_period,cell) 
+
+ad = filter(dat_analysis,status_met=="MET call") %>% group_by(study_period) %>% summarise(n=n(),med=roundz(median(screening_to_met_days),1),q1=roundz(quantile(screening_to_met_days,.25),1),q3=roundz(quantile(screening_to_met_days,.75),1),.groups='drop') %>% mutate(cell = paste0('n = ',n,'; ',med,' (',q1,' to ',q3,')')) %>%
+  select(study_period,cell) %>% add_column('Hospital'='All',.before=1)
+
+ftab_met_time = bind_rows(ftab_met_time,ad) 
+
+
+ftab_met = bind_rows(ftab_met_n,ftab_met_time) %>% spread(study_period,cell) %>% rename('MET outcome'=status_met) %>% mutate_at('MET outcome',~case_when(
+  .=='censor' ~ 'Censored',.=='MET call'~ 'MET call',
+  .=='Discharged alive'~'Discharged alive without MET call',
+  .=='Died in hospital'~'Died in hospital without MET call')) %>%
+  mutate_at('MET outcome',~replace_na(.,'Time to first MET call,days')) %>% arrange(Hospital,`MET outcome`)
+
+
+ftab_met = ftab_met %>% flextable() %>% merge_v(j='Hospital') %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(0.6,2.25,1.75,1.75))
+ftab_met %>% set_caption('Descriptive statistics, Time to first medical emergency call (MET)')
+
+```
+
+In the figure below, we show cumulative probability plots for time to first MET call, as well as deaths and discharges without MET calls by hospital. Outcomes are censored at 90 days from CriSTAL/SPICT identification - only 4 hospital admissions had their first MET call reported after 90 days. Clinical teams were specified as a stratification variable.
+
+```{r,fig.cap='Cumulative probability plot - time to first MET call; censored at 90 days',fig.height=10,fig.width=8}
+dat_analysis = mutate(dat_analysis,
+                      status_met_sens = case_when(screening_to_met_days>90~0,
+                                                  screening_to_met_days<=90 & status_met=='censor' ~ 0,
+                                                  screening_to_met_days<=90 & status_met=='MET call' ~ 1,
+                                                  screening_to_met_days<=90 & status_met=='Discharged alive' ~ 2,
+                                                  screening_to_met_days<=90 & status_met=='Died in hospital' ~ 3),
+                      screening_to_met_days_cens = pmin(90,screening_to_met_days)) %>%
+  mutate_at('status_met_sens',~factor(.,0:3,labels=c('censor','MET call','Discharged alive','Died in hospital')))
+
+
+mod.cif_met <- lapply(hospitals,function(x)
+  with(filter(dat_analysis,Hospital==x),cuminc(screening_to_met_days_cens,status_met_sens,group=intervention,strata=as.character(clinical_team_fclty),cencode='censor')))
+
+
+g<-lapply(1:3, function(x) ggcompetingrisks(mod.cif_met[[x]],
+                                            gnames = c('Usual care:MET','Intervention phase:MET','Usual care:Discharged alive','Intervention phase:Discharged alive','Usual care:Died in hospital','Intervention phase:Died in hospital'),
+                                            gsep=':',
+                                            xlab = 'Days since first recorded as high-risk CriSTAL or SPICT-positive',
+                                            ylab = 'Cumulative probability',
+                                            title = '',
+                                            legend.title='',
+                                            multiple_panels = T,
+                                            risk.table = TRUE,
+                                            conf.int = TRUE))
+names(g) <- hospitals
+
+#MET call
+g.cif_met <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  filter(event=="MET") %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=group,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+geom_path()+facet_grid(~Hospital,scales = 'free_y')+
+  scale_x_continuous('Days since first recorded as high-risk CriSTAL or SPICT-positive',breaks=seq(0,90,10))+
+  scale_colour_manual(values=cbPalette)+scale_fill_manual(values=cbPalette)+
+  expand_limits(y=0.2)+scale_y_continuous('Cumulative probability',breaks=seq(0,0.2,0.04))+g.theme+ggtitle('MET call')
+
+
+#no MET - died
+g.cif_no_met_died <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  filter(event=="Died in hospital") %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=group,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+geom_path()+facet_grid(~Hospital,scales = 'free_y')+
+  scale_x_continuous('Days since first recorded as high-risk CriSTAL or SPICT-positive',breaks=seq(0,90,10))+
+  scale_colour_manual(values=cbPalette)+scale_fill_manual(values=cbPalette)+
+  expand_limits(y=0.12)+scale_y_continuous('Cumulative probability',breaks=seq(0,0.12,0.02))+g.theme+ggtitle('Died in hospital without MET call')
+
+#no MET - discharged
+g.cif_no_met_discharged <- lapply(g,function(x) x$data) %>% bind_rows(.id='Hospital') %>%
+  filter(event=="Discharged alive") %>%
+  mutate_at("name",~str_wrap(.,30)) %>%
+  ggplot(aes(x=time,y=est,ymin=est-1.96*std,ymax=est+1.96*std,group=group,colour=group,fill=group))+
+  geom_ribbon(alpha=.2)+geom_path()+facet_grid(~Hospital,scales = 'free_y')+
+  scale_x_continuous('Days since first recorded as high-risk CriSTAL or SPICT-positive',breaks=seq(0,90,10))+
+  scale_colour_manual(values=cbPalette)+scale_fill_manual(values=cbPalette)+
+  expand_limits(y=1)+scale_y_continuous('Cumulative probability',breaks=seq(0,1,0.2))+g.theme+ggtitle('Discharged alive without MET call')
+
+ggarrange(g.cif_met, g.cif_no_met_died, g.cif_no_met_discharged,nrow=3,ncol=1,common.legend = T)
+
+# save all cumulative plots for using in 6_cumulative_plot.R
+save(g.cif_met, g.cif_los_a, g.cif_los_b, g.cif_readmit_a, g.cif_readmit_b, file='results/cumulative_plots.RData')
+```
+
+### Time-to-event modelling (Outcome 7)
+
+#### intention to treat analysis (Outcome 7)
+
+Time to first MET call was modelled using Cox proportional hazards regression to examine the difference between usual care and Intervention phases. Clinical teams were included as a stratification variable. Patient age and sex were included as covariates, as per previous analyses. We assumed a binary variable for study period (usual care, Intervention phase).
+
+Outcomes were censored at 90 days.
+
+The next table shows the results of the Cox model fitted to all hospitals.
+
+```{r}
+#change to competing risks to match the protocol
+mod.met <- coxph(Surv(screening_to_met_days_cens, status_met_sens=="MET call") ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis)
+
+zph.met = cox.zph(mod.met,transform='identity')
+
+ftab.met_coxph = summary(mod.met)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Age at admission (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>% select(Parameter,`Hazard ratio (95% CI)`)
+
+ftab.met_coxph %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.5,1.5)) %>% set_caption('Cox regression output for time to first MET call, all study hospitals')
+
+
+```
+
+Models results did not indicate strong evidence of Intervention phase, patient age and sex being associated with time to first MET call. 
+
+#### Model assessment (Outcome 7)
+
+##### Baseline hazards (Outcome 7)
+
+The next figures shows estimated baseline hazards by clinical team.
+
+```{r, fig.cap='Estimated baseline hazards by clinical team, time to first MET call',fig.width=8}
+hosp_teams = dat_analysis %>% count(Hospital,clinical_team_fclty)
+
+bplot = basehaz(mod.met, centered=TRUE) %>% left_join(hosp_teams,by=c('strata'='clinical_team_fclty')) %>% 
+  mutate_at('strata',~paste0('Team ',.,' (',format(n,big.mark=' ',trim=T),')')) %>%
+  filter(time>=0) %>% 
+  ggplot(aes(x=time, y=hazard, col=strata)) +
+  geom_line() +
+  scale_color_hue('Team (number of patients)') +
+  scale_y_continuous(limits=c(0,1.5),breaks=seq(0,1.5,0.25)) + 
+  scale_x_continuous(limits=c(0,90),breaks=seq(0,90,10)) +
+  xlab('Time, days') +
+  ylab('Cumulative hazard') +
+  facet_grid(~Hospital) +
+  g.theme
+
+bplot
+
+```
+
+##### Non-proportionality (Outcome 7)
+
+Residual plots are shown below. Results provide reasonable evidence that proportionality assumptions were met.
+
+```{r,fig.cap='Schoenfeld residual plots for all covariates included in the time to first MET call Cox model',fig.width=15,fig.height=10}
+par(mfrow=c(1,3))
+plot(zph.met[1],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main='Intervention phase');abline(h=0,col=2,lwd=2);grid()
+plot(zph.met[2],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main='Age');abline(h=0,col=2,lwd=2);grid()
+plot(zph.met[3],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main='Sex: Male');abline(h=0,col=2,lwd=2);grid()
+
+```
+
+#### Checking for influential observations (Outcome 7)
+
+```{r fig.cap='DFBETA plots for time to first MET call', fig.height=9, fig.width=8}
+
+influence_met = ggcoxdiagnostics(fit=mod.met, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+dfbeta_met = influence_met$data %>%
+  mutate(Parameter = case_when(
+           covariate=='intervention' ~ 'Intervention phase',
+           covariate=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           covariate=='sexMale' ~ 'Sex = Male')) 
+
+ggplot(dfbeta_met,aes(x=xval,y=res))+geom_point()+
+  geom_hline(aes(yintercept=0),colour='red',size=1.5,linetype='dashed')+
+  facet_grid(~Parameter) + 
+  ylab('Residuals (type = dfbeta)')+ xlab('Observation ID') + g.theme
+
+
+```
+
+
+#### Results by hospital (Outcome 7)
+
+The results below are from separate Cox models in each hospital. Estimated hazard ratios for Intervention phase vary between the hospitals.
+
+```{r}
+mod.met_h <- lapply(hospitals,function(x) coxph(Surv(screening_to_met_days_cens, status_met_sens=="MET call") ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis, subset=(Hospital==x), id=study_id))
+
+zph.met_h = lapply(1:3, function(x) cox.zph(mod.met_h[[x]], transform='identity'))
+
+ftab.met_coxph_h = lapply(1:3,function(x)
+  summary(mod.met_h[[x]])$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+    mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`))
+  
+names(ftab.met_coxph_h) <- hospitals
+
+ftab.met_coxph_h = bind_rows(ftab.met_coxph_h,.id='Hospital') %>% spread(Hospital,`Hazard ratio (95% CI)`)
+
+ftab.met_coxph_h %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2.4,1.25,1.25,1.25)) %>% set_caption('Cox regression output for time to first MET call')
+```
+
+Model assessment plots are given below. There was some evidence of non-proportionality with age, but it appeared to be influenced by a small number of observations.
+
+```{r,fig.cap='Schoenfeld residual plots for all covariates included in the time to first MET call Cox model',fig.width=15,fig.height=15}
+par(mfrow=c(3,3))
+#hospital 1
+plot(zph.met_h[[1]][1],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Intervention phase: ',hospitals[1]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.met_h[[1]][2],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Age: ',hospitals[1]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.met_h[[1]][3],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Sex: Male  ',hospitals[1]));abline(h=0,col=2,lwd=2);grid()
+
+#hospital 2
+plot(zph.met_h[[2]][1],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Intervention phase: ',hospitals[2]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.met_h[[2]][2],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Age: ',hospitals[2]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.met_h[[2]][3],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Sex: Male  ',hospitals[2]));abline(h=0,col=2,lwd=2);grid()
+
+#hospital 3
+plot(zph.met_h[[3]][1],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Intervention phase: ',hospitals[3]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.met_h[[3]][2],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Age: ',hospitals[3]));abline(h=0,col=2,lwd=2);grid()
+plot(zph.met_h[[3]][3],xlab='Days since first recorded as high-risk CriSTAL or SPICT-positive',lwd=2,main=paste0('Sex: Male  ',hospitals[3]));abline(h=0,col=2,lwd=2);grid()
+
+```
+
+#### Sensitivity analysis (Outcome 7)
+
+
+As a sensitivity analysis, we accounted for seasonality effects in the Cox model. 
+
+Below are the model results for all hospital combined, after adding seasonality effects. Including seasonal effects impacted the hazard ratios for Intervention phase.
+
+
+```{r}
+#dat_analysis = mutate(dat_analysis,admit_month=factor(month(admit_date),levels=1:12))
+mod.met_sens <- coxph(Surv(screening_to_met_days_cens, status_met_sens=="MET call") ~ intervention + age_scaled + sex + sinw + cosw + strata(clinical_team_fclty), data=dat_analysis)
+
+
+ftab.met_coxph_sens = summary(mod.met_sens)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='sinw' ~ 'Seasonality: Sine function',
+           term=='cosw' ~ 'Seasonality: Cosine function'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>%
+  select(Parameter,`Hazard ratio (95% CI)`)
+
+ftab.met_coxph_sens %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1.5,1.5)) %>% set_caption('Cox regression output for time to first MET call, all study hospitals; sensitivity analysis')
+
+
+```
+
+In the next figure, we show the estimated seasonal effect on the hazard ratios for time to first MET call. Evidence of a seasonal effect was minor, based on the y-axis.
+
+```{r fig.cap='Estiamated Hazard ratio based on time of year, hospital length of stay',fig.width=8,fig.height=5}
+seasonal_est = summary(mod.met_sens)$conf.int %>% as.data.frame() %>% rownames_to_column(var='term') %>% filter(grepl('sinw|cosw',term)) %>% select(term,`exp(coef)`) %>% rename('est'=`exp(coef)`) %>% spread(term,est)
+
+
+seasonal_est = mutate(seasonal_est,admit_frac=list(seq(0,1,0.01))) %>% unnest(cols=admit_frac) %>% 
+  mutate(out = exp(log(sinw)*sin(2*pi*admit_frac)+log(cosw)*cos(2*pi*admit_frac)),
+         admit_day = season::invyrfraction(admit_frac,type='monthly',text=F))
+
+ggplot(seasonal_est,aes(x=admit_day,y=out,group=1))+geom_line(size=1)+
+  scale_x_continuous('Calendar month (Jan - Dec)',breaks=1.5:13.5,labels=c(as.character(month(1:12,label=T)),''))+
+  scale_y_continuous('Hazard ratio',breaks=seq(0,1.5,0.05))+
+  scale_colour_manual(values=cbPalette)+g.theme
+
+```
+
+The next figure below shows the result of leave-one-out analysis.
+
+```{r fig.cap='DFBETA plots for time to first MET call', fig.height=9, fig.width=8}
+
+influence_met = ggcoxdiagnostics(fit=mod.met_sens, sline=FALSE, type = 'dfbeta', linear.predictions = FALSE, point.shape = 1) 
+dfbeta_met = influence_met$data %>%
+  mutate(Parameter = case_when(
+           covariate=='intervention' ~ 'Intervention phase',
+           covariate=='age_scaled' ~ 'Patient age (+5 years; mean = 85 years)',
+           covariate=='sexMale' ~ 'Sex = Male',
+           covariate=='sinw' ~ 'Seasonality: Sine function',
+           covariate=='cosw' ~ 'Seasonality: Cosine function')) 
+
+ggplot(dfbeta_met,aes(x=xval,y=res))+geom_point()+
+  geom_hline(aes(yintercept=0),colour='red',size=1.5,linetype='dashed')+
+  facet_wrap(~Parameter,ncol=3,nrow=2) + 
+  ylab('Residuals (type = dfbeta)')+ xlab('Observation ID') + g.theme
+
+
+```
+
+
+#### Overall absolute differences (Outcome 7)
+
+The next table shows the estimated 90-day probabilities of MET calls, by study phase.
+
+```{r}
+# from 5_bootstrapped_outputs.R
+load('bootstrap output/met.rda') #includes all hospitals and by site
+
+risk_difference_met %>% flextable() %>% merge_v(j="Analysis") %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2,1,1,1.5)) %>% set_caption('90-day probabilities of MET call')
+
+
+```
+
+\newline
+
+The next table shows estimated times to first MET call by study phase.
+
+```{r}
+rmst_difference_met %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1,1,1,2)) %>% set_caption('Estimated time to first MET call for usual care and Intervention phases')
+```
+
+#### Absolute differences by hospital (Outcome 7)
+
+The final two tables show the same estimates but by study phase and hospital.
+
+```{r}
+load('bootstrap output/met by hospital.rda') #includes all hospitals and by site
+
+risk_difference_met_h %>% flextable() %>% merge_v(j="Analysis") %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(2,1,1,1,1.5)) %>% set_caption('90-day probabilities of MET call')
+
+
+```
+
+\newline
+
+The next table shows estimated times to first MET call by study phase.
+
+```{r}
+rmst_difference_met_h %>% flextable() %>% theme_box() %>% fontsize(size=9,part='all') %>% width(width=c(1,1,1,1,2)) %>% set_caption('Estimated time to first MET call for usual care and Intervention phases')
+```
+
+### Analysis changing one clinical team (Outcome 7)
+
+One clinical team did not fully receive the intervention because they did not get the emails. Hence we use a sensitivity analysis to assess how this impacted the results. In this analysis the clinical team remains in the usual care phase and does not move over to the intervention.
+
+```{r}
+dat_analysis_pp = mutate(dat_analysis, 
+            intervention = ifelse(clinical_team_fclty=='4', 0, intervention))
+## 
+mod.met_pp <- coxph(Surv(screening_to_met_days_cens, status_met_sens=="MET call") ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis_pp)
+
+ftab.met_coxph_pp = summary(mod.met_pp)$conf.int %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var='term') %>%
+  mutate(Parameter = case_when(
+           term=='intervention' ~ 'Intervention phase',
+           term=='age_scaled' ~ 'Age at admission (+5 years; mean = 85 years)',
+           term=='sexMale' ~ 'Sex = Male'),
+         'Hazard ratio (95% CI)' = paste0(roundz(`exp(coef)`,2),' (',roundz(`lower .95`,2),' to ',roundz(`upper .95`,2),')')) %>% select(Parameter,`Hazard ratio (95% CI)`)
+
+ftab.met_coxph_pp %>% 
+  flextable() %>% 
+  theme_box() %>% 
+  fontsize(size=9,part='all') %>% 
+  width(width=c(2.5,1.5)) %>% set_caption('Cox regression output for time to first MET call, all study hospitals, per protocol')
+
+```
+
+# Summary plot (all outcomes)
+
+Planned subgroup analysis of results by hospital. Relevant text from the protocol: "Subgroup analyses of the primary outcome and outcomes 2 to 9 will be performed for each individual hospital separately."
+
+```{r}
+## MET
+ests_met_coxph_h = lapply(1:3, function(x)
+  summary(mod.met_h[[x]])$conf.int %>% as.data.frame()) %>%
+  bind_rows() %>%
+  rownames_to_column(var='term') %>%
+  filter(str_detect(term, 'intervention')) %>%
+  clean_names() %>%
+  mutate(type = 'Medical Emergency Team',
+         hospital = as.numeric(str_remove_all(term, '[^0-9]')), #? change now
+         hospital = as.numeric(as.factor(hospital)))
+
+## re-admission
+ests_readmit_coxph_h = lapply(1:3, function(x)
+  summary(mod.readmit_h[[x]])$conf.int %>% as.data.frame()) %>%
+  bind_rows() %>%
+  rownames_to_column(var='term') %>%
+  filter(str_detect(term, 'intervention')) %>%
+  clean_names() %>%
+  mutate(type = 'Re-admission',
+         hospital = as.numeric(str_remove_all(term, '[^0-9]')),
+         hospital = as.numeric(as.factor(hospital)))
+
+## 
+facet_labels = c('Time to discharge',
+                 'Time to in-hospital death',
+                 'Time to MET call',
+                 'Time to re-admission')
+ests_los_coxph_h = lapply(1:3, function(x)
+  summary(mod.los_h[[x]])$conf.int %>% as.data.frame()) %>%
+  bind_rows() %>%
+  bind_rows() %>%
+  rownames_to_column(var='term') %>%
+  filter(str_detect(term, 'intervention')) %>%
+  clean_names() %>%
+  mutate(type = ifelse(str_detect(term,'1:3'), 'Time to in-hospital death', 'Time to discharge'),
+         hospital = rep(1:3,2))
+
+# prep data
+to_plot = bind_rows(ests_met_coxph_h,
+                    ests_readmit_coxph_h,
+                    ests_los_coxph_h) %>%
+         mutate(typen = case_when( # for ordering
+           type == 'Time to discharge' ~ 1, 
+           type == 'Time to in-hospital death' ~ 2, 
+           type == 'Medical Emergency Team' ~ 3, 
+           type == 'Re-admission' ~ 4 
+         ),
+         typen = factor(typen, levels=1:4, labels=facet_labels),
+         Hospital = case_when( # blind hospital using X, Y, Z
+           hospital == 1 ~ 'Z',
+           hospital == 2 ~ 'Y',
+           hospital == 3 ~ 'X'
+         ))
+
+## plot
+# labels by dotted line
+labels = data.frame(Hospital = 3.2, exp_coef = c(1,1), 
+                    lower_95 = 1, upper_95 = 1,
+                    adj = c(1.05, -0.05),
+                    typen = 'Time to re-admission', # just in this panel
+                    label = c("Decrease in\nintervention phase",
+                              "Increase in\nintervention phase"))
+
+#
+gplot = ggplot(to_plot, aes(x=Hospital, y = exp_coef, ymin=lower_95, ymax=upper_95))+
+  geom_hline(yintercept = 1, lty=2, col='grey44')+
+  geom_text(data = labels, aes(x=Hospital, y=exp_coef, label=label, adj=adj), col='grey44', size=2)+
+  geom_point(size=2.5, col='dodgerblue')+
+  geom_errorbar(width=0, col='dodgerblue', size=1.05)+
+  scale_x_discrete(breaks=c('Z','Y','X'), expand = c(0.07, 0.20))+
+  xlab('Hospital')+
+  ylab('Hazard ratio')+
+  coord_flip()+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())+
+  facet_wrap(~typen, scales='free')
+gplot
+# export to figure
+jpeg('manuscript/figures/by_hospital.jpg', width=5, height=5, units='in', res=400)
+print(gplot)
+invisible(dev.off())
+```
+
+# R information
+
+The information below shows the version of R and the packages used in the above analysis.
+
+```{r}
+sessionInfo()
+```

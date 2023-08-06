@@ -1,0 +1,321 @@
+---
+title: 'Outcome 2: Hospital length of stay and discharge outcome'
+#author: "Nicole White, Xing Lee, Adrian Barnett"
+date: Sys.Date()
+output:
+  word_document: default
+  html_document: default
+keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,cache = TRUE,dev="png",res=300)
+```
+
+```{r, warnings=FALSE}
+# Outcome 2: Length of hospital stay, with the transition endpoints of ‘discharged
+# alive’ and ‘death in hospital’, from the date first recorded as high-risk
+# CriSTAL and SPICT-positive
+
+source('99_packages.R')
+source('99_trial_information.R')
+
+load('analysis_ready/trial_outcomes_data.rda')
+
+
+FitFlextableToPage <- function(ft, pgwidth = 6){
+  
+  ft_out <- ft %>% autofit()
+  
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+dat = cristal_spict_admission_info
+
+
+```
+
+```{r}
+dat %>% count(censored_admission_study_phase = censored_admit,fclty_outcome,sepn_mode) %>% flextable() %>% autofit()
+
+```
+
+```{r}
+### General data prep ###
+
+dat_analysis = dat %>%  
+  mutate(status = case_when(fclty_outcome=='Censored'~0,
+                            fclty_outcome=='Discharged alive'~1,
+                            fclty_outcome=='Died in hospital'~2),
+         status = factor(status,0:2,labels=c('censor','Discharged alive','Died in hospital')),
+
+         #covariates included in cox regression
+         intervention = case_when(study_period=='Usual care'~0,study_period=='Intervention exposure'~1),
+         age_scaled = (age_on_admission - 85)/10,sex=factor(sex,levels=c("Female","Male"))) %>%
+  #select variables of interest
+  select(study_id,study_period,fclty_name,admission_to_screening_hrs,length_of_stay_days_c,status,clinical_team_fclty,age_on_admission,age_scaled,sex,intervention)
+
+
+
+```
+
+This document summarises per-protocol analysis for outcome 2: hospital length of stay. 
+
+Data were analysed on `r Sys.Date()`.
+
+## Definitions
+
+Hospital length of stay was defined in days, from the date an individual was recorded as high-risk CrisTAL or SPICT-positive to the end of the same admission.
+
+\newpage
+
+# Per protocol analysis
+
+**From protocol** 
+
+Length of hospital stay, with the transition endpoints of ‘discharged alive’ and ‘death in hospital’, from the date first recorded as high-risk CriSTAL and SPICT-positive.
+
+Competing-risk proportional hazards survival models will be used to analyse time-to-event outcomes during patient hospitalisations (outcomes 2, 4, 5, 6 and 7). Hospital discharge and in-hospital deaths are treated as competing risks. Use of the competing risk survival model provides an estimate of the intervention effect which appropriately accounts for the competing and time-varying nature of discharge and death on the outcomes. The models will have a binary variable indicating if patients were in the intervention exposure phase. The survival analysis will adjust for likely predictors of patient age, sex and time spent in hospital for identified hospital episode prior to admission to enrolled clinical team. The survival analysis will stratify by clinical teams to control for consistent differences between teams. Cumulative incidence curves will be used to compare the event rates over time between the usual care exposure and intervention exposure phases.
+
+
+The current analysis uses observed event times. As a sensitivity analysis, data were re-analysed using a maximum follow-up time of 100 days, to account for the potential influence of outliers.
+
+## Unadjusted cumulative incidence functions for death and discharge: Usual care versus Intervention exposure
+
+### All trial sites combined
+
+```{r echo=T}
+mod.cif <- survfit(Surv(length_of_stay_days_c, status) ~ intervention, data=dat_analysis)
+```
+
+```{r fig-cif-pp,fig.height=8,,fig.width=10}
+plot(mod.cif,col=c(1,2,1,2),lty=c(1,1,2,2),mark.time=FALSE, lwd=2, 
+     xlab="Days since first recorded as high-risk CriSTAL or SPICT-positive", ylab="Probability in State")
+
+legend(70, .7, c("Discharged alive: Usual care", "Discharged alive: Intervention exposure", "Died in hospital: Usual care", "Died in hospital: Intervention exposure"),
+       col=c(1,2,1,2), lty=c(1,1,2,2), lwd=2, bty='n')
+
+```
+
+
+### By trial site
+
+```{r echo=F,fig.width=10,fig.height=10}
+mod.cif <- lapply(trial_sites,function(x)
+  with(filter(dat_analysis,fclty_name==x),cuminc(length_of_stay_days_c,status,group=intervention,cencode='censor')))
+
+g<-lapply(1:3, function(x) ggcompetingrisks(mod.cif[[x]],
+                    xlab = 'Days since first recorded as high-risk CriSTAL or SPICT-positive',
+                    ylab = 'Cumulative probability',
+                    title = '',
+                    legend.title='',
+                    risk.table = TRUE,
+                    conf.int = TRUE))
+names(g) <- trial_sites
+
+
+
+#facet by site
+lapply(g,function(x) x$data) %>% bind_rows(.id='site') %>%
+  mutate(group_event = case_when(
+    group==0 & event=='Died' ~ 'Usual care: Died in hospital',
+    group==0 & event=='Discharged' ~ 'Usual care: Discharged alive',
+    group==1 & event=='Died' ~ 'Intervention exposure: Died in hospital',
+    group==1 & event=='Discharged' ~ 'Intervention exposure: Discharged alive')) %>%
+  ggplot(aes(x=time,y=100*est,ymin=100*(est-1.96*std),ymax=100*(est+1.96*std),colour=group_event,fill=group_event))+
+  geom_step(size=1)+geom_ribbon(alpha=.2)+facet_wrap('site',nrow=3,ncol=1)+
+  scale_y_continuous('Cumulative %, commenced IMV',breaks=seq(0,100,10))+scale_x_continuous('Days since hospital admission',breaks=seq(0,150,10))+
+  theme_bw() + theme(strip.background = element_rect(fill='white'),
+                     strip.text = element_text(size = 12),
+                     axis.text = element_text(size=12),
+                     axis.text.x = element_text(size=12),
+                     axis.text.y = element_text(size=12),
+                     legend.position = 'top',legend.direction = 'horizontal',legend.title = element_blank())
+
+
+
+```
+
+
+\newpage
+
+## Fixed effects
+
+Below are descriptive summaries for age on admission, sex and hours between admission and first date recorded as high-risk CrisSTAL or SPICT positive. Distributions for continuous variables are also plotted.
+
+```{r}
+ftab_sex = dat_analysis %>% count(study_period,sex) %>% group_by(study_period) %>% mutate("cell"=paste0(n,' (',round(100*n/sum(n)),'%)')) %>% select(-n) %>% spread(sex,cell) 
+
+ftab_age = dat_analysis %>% group_by(study_period) %>% summarise(med=median(age_on_admission),q1=quantile(age_on_admission,.25),q3=quantile(age_on_admission,.75),avg=mean(age_on_admission),stdev=sd(age_on_admission),n=n(),.groups='drop') %>% mutate('Median (IQR)' = paste0(med,' (',q1,' to ',q3,')'),'Mean (SD)'=paste0(round(avg,1),' (',round(stdev,1),')')) %>% select(study_period,n,`Median (IQR)`,`Mean (SD)`) 
+
+
+ftab_screen = dat_analysis %>% group_by(study_period) %>% summarise(med=median(admission_to_screening_hrs),q1=quantile(admission_to_screening_hrs,.25),q3=quantile(admission_to_screening_hrs,.75),avg=mean(admission_to_screening_hrs),stdev=sd(admission_to_screening_hrs),n=n(),.groups='drop') %>% mutate('Median (IQR)' = paste0(med,' (',q1,' to ',q3,')'),'Mean (SD)'=paste0(round(avg,1),' (',round(stdev,1),')')) %>% select(study_period,n,`Median (IQR)`,`Mean (SD)`) 
+
+ftab_sex %>% flextable() %>% FitFlextableToPage()
+ftab_age %>% flextable() %>% FitFlextableToPage()
+ftab_screen %>% flextable() %>% FitFlextableToPage()
+
+
+```
+
+
+```{r, fig.height=10,fig.width=15}
+dat_analysis %>% select(study_id,study_period,age_on_admission,admission_to_screening_hrs,fclty_name) %>% gather(variable,value,-c(study_id,study_period,fclty_name)) %>%
+  ggplot(aes(value,group=study_period,fill=fclty_name))+geom_histogram() +facet_wrap(~variable,scales='free')
+
+```
+
+
+## Proportional hazards regression; cause-specific
+
+```{r echo=T}
+# Covariates: intervention (binary; 0=usual care, 1=intervention exposure); intervention establishment excluded
+#           : age (centered at 85; scaled by 10), sex (ref=Female) 
+## to add: time from admission to screening, 
+# Strata: clinical_team_fclty
+#coxph
+mod.coxph <- coxph(Surv(length_of_stay_days_c, status) ~ intervention + age_scaled + sex +  strata(clinical_team_fclty), data=dat_analysis,id=study_id)
+```
+
+```{r}
+#summary table
+ftab_est_ci = data.frame(summary(mod.coxph)$conf.int) %>% rownames_to_column(var='term')
+ftab_p = data.frame('p' = summary(mod.coxph)$coefficient[,'Pr(>|z|)']) %>% rownames_to_column(var='term') %>% mutate(p = ifelse(p<0.001,'<0.001',round(p,3)))
+
+ftab = full_join(ftab_est_ci,ftab_p,by='term') %>% separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome'=factor(event,levels=2:3,labels=mod.coxph$states[2:3]),
+         Parameter = case_when(
+           term=='intervention' ~ 'Intervention exposure',
+           term=='age_scaled' ~ 'Age at admission',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='admission_to_screening_hrs' ~ 'Hours from admission to high-risk CriSTAL/SPICT-positive'),
+         'Hazard ratio' = round(exp.coef.,2),
+         '95% CI' = paste(round(lower..95,2),'to',round(upper..95,2))) %>% rename('p-value'=p) %>%
+  select(`Hospital outcome`,Parameter,`Hazard ratio`,`95% CI`,`p-value`)
+
+ftab %>% flextable() %>% merge_v(j='Hospital outcome') %>% theme_box() %>%  
+  footnote(j=2,i=c(2,5),value=as_paragraph("Centered at Age = 85, per 10 year increase")) %>%
+  FitFlextableToPage()
+
+```
+
+\newpage
+
+## Competing risks regression
+
+```{r}
+covmat <- model.matrix(~ intervention + age_scaled + sex,dat_analysis)[,-1]
+ftime = dat_analysis$length_of_stay_days_c
+fstatus = as.numeric(dat_analysis$status)-1
+mod.crr_discharged = crr(ftime, fstatus, cov1=covmat,cencode='censor',failcode = 1)
+mod.crr_died = crr(ftime, fstatus, cov1=covmat,cencode='censor',failcode = 2)
+ftab_discharged = summary(mod.crr_discharged)$conf.int[,-2] %>% data.frame() %>% rownames_to_column(var='Parameter') %>% rename('Hazard ratio'=exp.coef.) %>% mutate('95% CI'=paste(paste(round(X2.5.,2),'to',round(X97.5.,2)))) %>% select(Parameter,'Hazard ratio','95% CI')
+
+ftab_died = summary(mod.crr_died)$conf.int[,-2] %>% data.frame() %>% rownames_to_column(var='Parameter') %>% rename('Hazard ratio'=exp.coef.) %>% mutate('95% CI'=paste(paste(round(X2.5.,2),'to',round(X97.5.,2)))) %>% select(Parameter,'Hazard ratio','95% CI')
+```
+
+\newpage
+
+# Sensitivity analysis
+
+To remove the potential influence of outliers, restrict the maximum follow up time to `r censor day` days
+
+
+## Unadjusted cumulative incidence functions for death and discharge: Usual care versus Intervention exposure
+
+```{r, echo=T}
+## compare change in endpoints between per-protocol and updated censoring at censor_day
+dat_analysis %>% count(status,status_sens)
+
+mod.cif_sens <- survfit(Surv(length_of_stay_days_sens, status_sens) ~ intervention, data=dat_analysis)
+
+```
+
+
+```{r fig-cif-sens,fig.height=8,,fig.width=10}
+plot(mod.cif_sens,col=c(1,2,1,2),lty=c(1,1,2,2),mark.time=FALSE, lwd=2, 
+     xlab="Days since first recorded as high-risk CriSTAL or SPICT-positive", ylab="Probability in State")
+
+legend(40, .7, c("Discharged alive: Usual care", "Discharged alive: Intervention exposure", "Died in hospital: Usual care", "Died in hospital: Intervention exposure"),
+       col=c(1,2,1,2), lty=c(1,1,2,2), lwd=2, bty='n')
+
+```
+
+
+### By trial site
+
+```{r echo=F,fig.width=10,fig.height=10}
+mod.cif_sens <- lapply(trial_sites,function(x)
+  with(filter(dat_analysis,fclty_name==x),cuminc(length_of_stay_days_sens,status_sens,group=intervention,cencode='censor')))
+
+g<-lapply(1:3, function(x) ggcompetingrisks(mod.cif_sens[[x]],
+                    xlab = 'Days since first recorded as high-risk CriSTAL or SPICT-positive',
+                    ylab = 'Cumulative probability',
+                    title = '',
+                    legend.title='',
+                    risk.table = TRUE,
+                    conf.int = TRUE))
+names(g) <- trial_sites
+
+
+
+#facet by site
+lapply(g,function(x) x$data) %>% bind_rows(.id='site') %>%
+  mutate(group_event = case_when(
+    group==0 & event=='Died' ~ 'Usual care: Died in hospital',
+    group==0 & event=='Discharged' ~ 'Usual care: Discharged alive',
+    group==1 & event=='Died' ~ 'Intervention exposure: Died in hospital',
+    group==1 & event=='Discharged' ~ 'Intervention exposure: Discharged alive')) %>%
+  ggplot(aes(x=time,y=100*est,ymin=100*(est-1.96*std),ymax=100*(est+1.96*std),colour=group_event,fill=group_event))+
+  geom_step(size=1)+geom_ribbon(alpha=.2)+facet_wrap('site',nrow=3,ncol=1)+
+  scale_y_continuous('Cumulative %, commenced IMV',breaks=seq(0,100,10))+scale_x_continuous('Days since hospital admission',breaks=seq(0,censor_day,5))+
+  theme_bw() + theme(strip.background = element_rect(fill='white'),
+                     strip.text = element_text(size = 12),
+                     axis.text = element_text(size=12),
+                     axis.text.x = element_text(size=12),
+                     axis.text.y = element_text(size=12),
+                     legend.position = 'top',legend.direction = 'horizontal',legend.title = element_blank())
+
+
+
+```
+
+
+## Competing risks Cox regression
+
+"Death and discharge as competing risks; clinical team as baseline strata (14 levels)"
+
+```{r echo=T}
+# Covariates: intervention (binary; 0=usual care, 1=intervention exposure); intervention establishment excluded
+#           : age (centered at 85; scaled by 10), sex (ref=Female) 
+## to add: time from admission to screening, 
+# Strata: clinical_team_fclty
+#coxph
+mod.coxph_sens <- coxph(Surv(length_of_stay_days_sens, status_sens) ~ intervention + age_scaled + sex + strata(clinical_team_fclty), data=dat_analysis,id=study_id)
+```
+
+
+```{r}
+#summary table
+ftab_est_ci = data.frame(summary(mod.coxph_sens)$conf.int) %>% rownames_to_column(var='term')
+ftab_p = data.frame('p' = summary(mod.coxph_sens)$coefficient[,'Pr(>|z|)']) %>% rownames_to_column(var='term') %>% mutate(p = ifelse(p<0.001,'<0.001',round(p,3)))
+
+ftab = full_join(ftab_est_ci,ftab_p,by='term') %>% separate(term,into=c('term','event'),sep=':') %>%
+  mutate(term = str_remove_all(term,'_1'),
+         'Hospital outcome'=factor(event,levels=2:3,labels=mod.coxph$states[2:3]),
+         Parameter = case_when(
+           term=='intervention' ~ 'Intervention exposure',
+           term=='age_scaled' ~ 'Age at admission',
+           term=='sexMale' ~ 'Sex = Male',
+           term=='admission_to_screening_hrs' ~ 'Hours from admission to high-risk CriSTAL/SPICT-positive'),
+         'Hazard ratio' = round(exp.coef.,2),
+         '95% CI' = paste(round(lower..95,2),'to',round(upper..95,2))) %>% rename('p-value'=p) %>%
+  select(`Hospital outcome`,Parameter,`Hazard ratio`,`95% CI`,`p-value`)
+
+ftab %>% flextable() %>% merge_v(j='Hospital outcome') %>% theme_box() %>%  
+  footnote(j=2,i=c(2,5),value=as_paragraph("Centered at Age = 85, per 10 year increase")) %>%
+  FitFlextableToPage()
+
+```

@@ -1,0 +1,231 @@
+---
+title: "InterACT queries for CI feedback"
+author: 'Prepared by: Nicole White'
+date: "16/06/2022"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, warning=FALSE, message=F}
+# Outcome 2: Length of hospital stay, with the transition endpoints of ‘discharged
+# alive’ and ‘death in hospital’, from the date first recorded as high-risk
+# CriSTAL and SPICT-positive
+
+source('99_packages.R')
+
+load('analysis_ready/all_hospital_admissions.rda')
+rm(cristal_spict_admission_info)
+load('analysis_ready/trial_outcomes_data.rda')
+
+
+FitFlextableToPage <- function(ft, pgwidth = 6){
+  
+  ft_out <- ft %>% autofit()
+  
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+```
+
+# Summary 
+
+This document summarises initial data processing, and data queries for Outcomes 1, 2 and 3.
+
+Data queries relate to:
+
+- Definition of discharge outcome.
+- Definition of trial outcomes for admissions involving private facilities and censored admissions.
+
+
+# Data summary
+
+```{r}
+#inital sample size: person_id and study_id
+load('processed/at_risk_info.rda')
+total_study_id = screening_dates %>% distinct(study_id) %>% nrow()
+total_person_id = screening_dates %>% distinct(person_id) %>% nrow()
+
+
+#excluded study_id
+unmatched_screening_dates = outstanding_records %>% group_by(study_id,fclty_name,screening_date_time) %>% 
+  summarise(admit_start_date_time = min(admit_start_date_time),
+  admit_end_date_time = max(admit_end_date_time),.groups='drop')
+
+n_unmatched = outstanding_records %>% distinct(study_id) %>% nrow()
+
+set.seed(783)
+dat_duplicate_screen = duplicated_screening %>% select(person_id,group,admit_ep,study_id,cristal_spict_date_time,clinical_team) %>%
+  arrange(person_id,cristal_spict_date_time) 
+sample_person_id = sample(dat_duplicate_screen$person_id,size=5)
+
+excluded_screened_same_group = duplicated_screening %>% distinct(study_id) %>% nrow()
+
+
+#numbers for flow chart
+
+n0 = total_study_id
+n_matched = n0-n_unmatched
+n1 = n_matched - excluded_screened_same_group
+n_excluded_establishment = excluded_on_censoring %>% distinct(study_id) %>% nrow()
+n2 = n1 - n_excluded_establishment #revised sample size before censoring or looking private facilities
+
+
+n_censored_usualcare = filter(cristal_spict_admission_info,censored==1,study_period=='Usual care') %>% distinct(study_id) %>% nrow()
+n_censored_intervention = filter(cristal_spict_admission_info,censored==1,study_period=='Intervention exposure') %>% distinct(study_id) %>% nrow()
+
+n3 = n2-n_censored_usualcare - n_censored_intervention
+```
+
+The trial sample size for analysis is summarised in the figure below. 
+
+Details of per-protocol study censoring is also provided, using the following criteria
+
+- Data collected in the intervention establishment phase is excluded
+- Patients who remain in the wards at the change-over time to the establishment phase are censored on the day prior to the change-over
+- Patients who remain in the hospital at the end of the intervention exposure phase will be censored on the last study day
+
+The final sample size pending data queries is **`r cristal_spict_admission_info %>% distinct(study_id) %>% nrow() %>% format(.,big.mark=',')` study_ids** corresponding to **`r cristal_spict_admission_info %>% distinct(person_id) %>% nrow() %>% format(.,big.mark=',')` unique individuals/hospital admissions**
+
+
+```{r,fig.cap = 'Study flowchart'}
+grViz(diagram = "digraph flowchart {
+  node [fontname = arial, shape = rectangle]
+  box0 [label = '@@1']
+  box1 [label = '@@2']
+  box2 [label = '@@3']
+  
+  exclude0 [label = '@@4']
+  
+  censor1 [label = '@@5']
+  censor2 [label = '@@6']
+  
+  box0 -> box1 -> box2;
+  box0 ->exclude0;
+  
+  box2 -> censor1; box2 -> censor2;
+}
+  
+  [1]: paste0('Total unique study_id in REDCap; n = ',format(n0,big.mark=','))
+  [2]: paste0('Total study_id with matching hospital admission; n = ',format(n1,big.mark=','))    
+  [3]: paste0('Total study_id recorded during usual care and intervention establishment phases; n = ',format(n2,big.mark=','))    
+  [4]: paste0('Excluded:\\nstudy_id without matching hospital admission; n = ',n_unmatched,'\\nMore than 1 study_id recorded during the same hospital admission; n = ',excluded_screened_same_group)
+  [5]: paste0('Study censoring:\\nstudy_id censored at end of usual care phase; n = ',format(n_censored_usualcare,big.mark=','),'\\nstudy_id censored at end of intervention exposure phase; n = ',format(n_censored_intervention,big.mark=','))
+  [6]: paste0('Not censored; n = ',format(n3,big.mark=','))
+",height=300)
+
+```
+
+
+
+# Data queries
+
+* Review the definition of discharged alive based on separation mode (see **Definition of discharge outcome**). If the current mapping is not appropriate, please advise on any updates.
+
+* Advise on the appropriateness of defining hospital admissions based on the "group" variable (see **Definition of a single hospital admission**). The current definition has been used to define length of stay and discharge outcome (Outcome 2) and public hospital re-admissions (Outcome 3).
+
+* Should admissions to private facilities within 24 hours of public hospital discharge be counted as the same episode of care? (see **Defining outcomes for admissions involving private facilities**)
+
+
+## Definition of discharge outcome
+
+The table below shows the current mapping of discharge outcome (Died, Discharged alive, Censored) to Qld Health separation modes.
+
+
+```{r}
+cristal_spict_admission_info %>% count(final_disposition,sepn_mode) %>%
+  rename("Hospital disposition"=final_disposition,"Separation mode (SSB)"=sepn_mode) %>% 
+  flextable() %>% merge_v(j = "Hospital disposition") %>% theme_box() %>% footnote(i=c(4,5),j=2,value = as_paragraph('Confirmed as in-hospital deaths after linkage with deaths data')) %>% FitFlextableToPage
+```
+
+
+## Definition of a single hospital admission
+
+Hospital admissions are defined in the dataset by the variable "group", provided by the Statistical Services Branch (SSB). The definition provided for group is "a continuous episode of care". This variable therefore accounts for changes in care type during admission (i.e., acute to non-acute or SNAPs) and inter-hospital transfers as part of the same episode of care. 
+
+
+In the example below, 
+
+* "A" was admitted on 2021-04-30 and was still in hospital on 2021-06-30 (censored at study end).
+* "B" was admitted on 2021-02-22 and discharged on 2021-03-30
+* "C" was admitted on 2020-10-17 and discharged on 2020-12-29
+
+
+```{r}
+#selected examples
+eg_person_id <- tibble(person_id = c(10036323,10010672,10002378),group=c(1,1,12))
+
+
+
+ftab_group = right_join(cohort_admissions_icu,eg_person_id,by=c('person_id','group')) %>% 
+  select(person_id,group,admit_ep,fclty_name:admit_end_date_time) %>% 
+    mutate(person_id = factor(person_id,labels=LETTERS[1:3])) %>% flextable() %>% merge_v(j='person_id') %>% theme_box() %>% FitFlextableToPage()
+
+ftab_group
+
+```
+
+
+```{r}
+multi_home = cohort_admissions_icu %>% right_join(select(cristal_spict_admission_info,person_id,study_id,group),by=c('person_id','group')) %>% group_by(study_id) %>% summarise(n_home = sum(sepn_mode=='Home/Usual Residence')) %>% filter(n_home>1)
+
+```
+
+`r nrow(multi_home)` admissions recorded more than one separation to Home/Usual Residence within the same hospital admission. In the examples below:
+
+
+* "A" entered the study at RBWH on 2020-05-27 and was discharged on 2020-06-16 after being transferred home to Bundaberg.
+* "A" entered the study again at RBWH on 2020-09-04 and was discharged on 2020-09-18 after being transferred home to Bundaberg.
+* "B" entered the study at RBWH on 2020-10-29 and was discharged on 2020-11-05 after being transferred home to Rockhampton.
+
+```{r, warning=F}
+#manually chosen examples
+eg_person_id = cristal_spict_admission_info %>% filter(person_id %in% c(10009912,10023110)) %>% select(study_id,person_id,group)
+cohort_admissions_icu %>% semi_join(eg_person_id,by=c('person_id','group')) %>% select(person_id,group,admit_ep,orig_ref_code,fclty_name,sepn_mode,admit_start_date_time,admit_end_date_time) %>% 
+  left_join(select(cristal_spict_admission_info,person_id,group,admit_ep,cristal_spict_date_time),by = c("person_id", "group", "admit_ep")) %>% select(person_id,group,cristal_spict_date_time,everything()) %>%
+  mutate(person_id = factor(person_id,labels=LETTERS[1:2])) %>% flextable() %>% merge_v(j=c('person_id','group')) %>% theme_box() %>% FitFlextableToPage()
+
+```
+
+# Defining outcomes for admissions involving private facilities
+
+```{r}
+n_private = cohort_admissions_icu %>% right_join(select(cristal_spict_admission_info,person_id,study_id,group),by=c('person_id','group')) %>% filter(fclty_name=='Private') %>% distinct(study_id) %>% nrow()
+
+```
+
+`r n_private` study IDs included admission to private facilities within a continous episode of care.
+
+In the data, admissions to private facilities are:
+
+* concurrent with a public hospital admission, or
+* within 24 hours of discharge from a public facility, or
+* greater than 24 hours of discharge from a public facility
+
+
+## Admission to private facilities within 24 hours of discharge from a public hospital
+
+`r cristal_spict_private_tfr %>% nrow()` admissions from high-risk CriSTAL/SPICT-positive patients were transferred to a private facility within 24 hours of discharge from a public hospital. Some examples are provided in the table below. 
+
+For all examples, the length hospital admission has been defined as the time between "admit_start_public" and "admit_end_private".
+
+The final column (final_disposition) is the final discharge outcome.
+
+```{r}
+private_id = cristal_spict_admission_info %>% filter(person_id %in% cristal_spict_private_tfr[['person_id']]) %>% select(study_id,person_id,study_id)
+
+dat_private_tfr = private_id %>% full_join(cristal_spict_private_tfr,by='person_id') %>% 
+  left_join(cristal_spict_admission_info %>% select(person_id,group,admit_ep,admit_end_date_time,final_disposition),by=c('person_id','group','admit_ep_index'='admit_ep'),suffix=c('_public','_private')) %>%
+  select(person_id,admit_start_date_time_index,admit_end_date_time_public,sepn_mode,orig_ref_code_private,admit_start_date_time_private,admit_end_date_time_private,final_disposition) %>%
+  rename('admit_start_public'=admit_start_date_time_index,'admit_end_public'=admit_end_date_time_public,'admit_start_private'=admit_start_date_time_private,'admit_end_private'=admit_end_date_time_private)
+
+
+dat_private_tfr %>% sample_n(5) %>%  mutate(person_id = factor(person_id,labels=LETTERS[1:5])) %>% arrange(person_id) %>%
+  flextable() %>% FitFlextableToPage()
+
+```
+

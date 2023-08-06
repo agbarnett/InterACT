@@ -1,0 +1,259 @@
+---
+title: "Data linkage processing v1"
+author: "Nicole White"
+date: "03/03/2022"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(scipen=999) # avoid scientific presentation
+set.seed(TeachingDemos::char2seed('interact'))
+source('99_packages.R')
+source('99_functions.R')
+load('cohort_datasets_raw.rda')
+
+```
+
+## Summary
+
+This document summarise the total number of records and matches across the following datasets
+
+* cohort_lookup.xlsx
+* XXXX_V3_at risk admit date.xlsx (XXXX = GCUH, TPCH, RBWH)
+* cohort_admit_main.xlsx
+
+
+
+Datetime-processed datasets are saved as individual data frames in `cohort_datasets_raw.rda'.
+
+
+## cohort_lookup.xlsx
+```{r}
+n_studyid_lookup = cohort_lookup %>% distinct(study_id) %>% nrow()
+n_personid_lookup = cohort_lookup %>% distinct(person_id) %>% nrow()
+```
+
+This dataset includes the mapping of study ID from REDCap to person ID supplied by SSB.
+
+In total, there were `r format(n_studyid_lookup,big.mark=',')` studyIDs and `r format(n_personid_lookup,big.mark=',')` person IDs in the dataset. The table belows shows the number of rows for the same person ID.
+
+```{r duplicate-personid}
+tab.person_id_n = count(cohort_lookup,person_id,name='Total instances, same person_id') %>% count(`Total instances, same person_id`) %>% mutate(n = format(n,big.mark = ','))
+
+flextable(tab.person_id_n) %>% autofit()
+
+```
+
+```{r}
+#get duplicates
+duplicate_person_id = get_dupes(cohort_lookup,person_id)
+#add facility name
+duplicate_person_id = duplicate_person_id %>% mutate(facility = gsub('_.*','',study_id))
+```
+
+Overall, there were `r duplicate_person_id %>% distinct(person_id) %>% nrow()` person IDs that had more than 1 study ID assigned to them. Reasons for duplicates were multiple study IDs for the same person ID within the same trial hospital, or from more than 1 trial trial hospital. Total numbers per reason are provided in the table below; examples of each reason are also given.
+
+```{r}
+tab.duplicate_reasons = duplicate_person_id %>% group_by(person_id) %>%
+  summarise(Reason = case_when(all(facility=='GCUH') ~ 'Multiple study ID at GCUH',
+                               all(facility=='RBWH') ~ 'Multiple study ID at RBWH',
+                               all(facility=='TPCH') ~ 'Multiple study ID at RBWH'),.groups='drop') %>%
+  mutate_at(c("Reason"),~replace_na(.,replace='Multiple study ID from 1+ trial hospitals')) %>% count(Reason)
+                               
+flextable(tab.duplicate_reasons) %>% autofit()          
+                               
+```
+
+```{r}
+dupes_same_facility = duplicate_person_id %>% group_by(person_id) %>% filter(all(facility=='GCUH')) %>% ungroup()
+dupes_different_facility = duplicate_person_id %>% group_by(person_id) %>% filter(!(all(facility=='GCUH')|all(facility=='TPCH')|all(facility=='RBWH'))) %>% ungroup()
+
+#choose a person_id for each case at random
+example_same = dupes_same_facility %>% distinct(person_id) %>% sample_n(1) %>% pull(person_id)
+example_diff = dupes_different_facility %>% distinct(person_id) %>% sample_n(1) %>% pull(person_id)
+
+lookup_same =  filter(cohort_lookup,person_id==example_same)
+lookup_diff =  filter(cohort_lookup,person_id==example_diff)
+
+
+```
+
+Here is an example of the same person ID being assigned multiple different study IDs from the same trial hospital:
+
+```{r}
+flextable(lookup_same) %>% theme_box() %>% autofit()
+```
+
+And here is an example of the same person ID being assigned multiple different study IDs from different trial hospitals:
+
+```{r}
+flextable(lookup_diff) %>% theme_box() %>% autofit()
+```
+
+## XXXX_V3_at risk admit date.xlsx (XXXX = GCUH, TPCH, RBWH)
+
+This dataset gives information on the index admission for each patient recruited to the InterACT trial.
+
+As before, there were `r admission_dates %>% distinct(study_id) %>% nrow()` unique study IDs and `r admission_dates %>% distinct(person_id) %>% nrow()` person IDs in the dataset. There were no duplicates based on study ID and datetime of the index admission, meaning that all entries were unique. Below are the same examples of duplicate person IDs.
+
+```{r}
+admission_dates_same = filter(admission_dates,person_id==example_same) %>% select(study_id,person_id,index_admission_date_time)
+admission_dates_diff = filter(admission_dates,person_id==example_diff) %>% select(study_id,person_id,index_admission_date_time)
+```
+
+```{r}
+flextable(admission_dates_same) %>% theme_box() %>% autofit()
+```
+
+```{r}
+flextable(admission_dates_diff) %>% theme_box() %>% autofit()
+```
+
+These examples suggest issues with person_id or cases where the same patient was screened multiple times, or potential issues with the person_id variable.
+
+**TO DO: Follow up about how to handle duplicate person_id**
+
+## cohort_admit_main.xlsx
+
+**NOTE: All subsequent summaries are based on person ID only**
+
+This dataset include all hospital admissions from persons aged 75 years and older from `r format(min(cohort_admission$admit_start_date_time),'%d-%m-%Y')` (person ID: `r filter(cohort_admission,admit_start_date_time==min(cohort_admission$admit_start_date_time)) %>% pull(person_id)`) to `r format(max(cohort_admission$admit_start_date_time),'%d-%m-%Y')` (person ID: `r filter(cohort_admission,admit_start_date_time==max(cohort_admission$admit_start_date_time)) %>% pull(person_id)`)
+
+This sample should therefore include hospitalisations for all InterACT patients ('at risk' group) and a comparator group.
+
+
+Overall, there were `r format(length(atrisk_person_id),big.mark=',')` patients from the at risk group and `r format(length(comparator_person_id),big.mark=',')` patients from the comparator group with one or more admissions recorded.
+
+In the at risk group, the following rule was used to identify if an admission occurred before or after enrollement into the InterACT trial:
+
+* IF the end of an admission is <= the start of the index admission, THEN set to "0" (Before InterACT)
+* IF the start of an admission is < the start of the index admission & the end of an admission is >= the start of the index admission, THEN set to "1" (InterACT)
+* IF the start of an admission is >= the start of the index admission, THEN set to "2".
+
+Information on the total number of admissions and unique patients is provided in the table below
+
+```{r}
+tab.cohort_admission_atrisk = cohort_admission_atrisk %>% 
+  group_by('Admission code'=interact_flag) %>% summarise('Total admissions' = format(n(),big.mark = ','),'Total patients' = format(length(unique(person_id)),big.mark = ','),.groups='drop')
+
+
+tab.cohort_admission_atrisk %>% flextable() %>% theme_box() %>% autofit()
+
+```
+
+These results show that there were some patients whose index admission could not be mapped to an InterACT encounter, based on the rules above. Admission dates for affected IDs are given below (at risk group only).
+
+```{r}
+#what about the patients that do not have interact_flag=1?
+
+a = filter(cohort_admission_atrisk,interact_flag==1) %>% distinct(person_id) %>% pull(person_id)
+b = setdiff(atrisk_person_id,a)
+filter(cohort_admission_atrisk,person_id %in% b) %>% select(person_id,index_admission_date_time,admit_start_date_time,admit_end_date_time,interact_flag) %>% arrange(person_id,admit_start_date_time) %>% flextable() %>% merge_v(j=c("person_id","index_admission_date_time")) %>% theme_box() %>% autofit()
+```
+
+
+```{r}
+person_id_multiple_interact <- filter(cohort_admission_atrisk,interact_flag==1) %>% count(person_id) %>% filter(n>1) 
+
+example_multiple_interact = person_id_multiple_interact %>% sample_n(4) %>% pull(person_id)
+
+```
+
+There were `r nrow(person_id_multiple_interact)` person IDs with more than one admission that was mapped to InterACT. Examples for randomly selected IDs are given in the table below (at risk group only).
+
+```{r}
+
+filter(cohort_admission_atrisk,person_id %in% example_multiple_interact,interact_flag==1) %>%
+select(person_id,index_admission_date_time,admit_start_date_time,admit_end_date_time) %>% arrange(person_id,admit_start_date_time) %>% flextable() %>% merge_v(j=c("person_id","index_admission_date_time")) %>% theme_box() %>% autofit()
+```
+
+To give an overall picture of case volumes, here is a plot showing the number of admissions by facility over time, for the at risk and comparator groups. Public hospitals that did not participate in the InterACT trial are defined as a single group called 'Other'.
+
+**NOTE: Includes all Queensland hospitals; confirm if need to filter, e.g., based on HHS catchment(s)**
+
+```{r}
+cohort_admission = mutate(cohort_admission,
+                          group = case_when(
+                            person_id %in% atrisk_person_id ~ 'At risk',
+                            person_id %in% comparator_person_id ~ 'Comparator',
+                          ),
+                          facility = case_when(
+                            fclty_name == 'Private' ~ 'Private',
+                            fclty_name =="Royal Brisbane and Women's" ~ 'RBWH',
+                            fclty_name == "Gold Coast University Hospital" ~ 'GCUH',
+                            fclty_name == "The Prince Charles Hospital" ~ 'TPCH'),
+                          length_of_stay = as.numeric(admit_end_date_time-admit_start_date_time,'days'),
+                          ) %>%
+  mutate_at(c('facility'),~replace_na(.,'Other'))
+
+plot_data = cohort_admission %>% group_by(calendar_week = floor_date(admit_start_date_time,unit='month'),facility,group) %>%
+  summarise(n=n(),
+            los_med = quantile(length_of_stay,.5),
+            los_25 = quantile(length_of_stay,.25),
+            los_75 = quantile(length_of_stay,.75),
+            los_05 = quantile(length_of_stay,.05),
+            los_95 = quantile(length_of_stay,.95),
+            .groups='drop')
+
+
+```
+
+### Weekly admissions
+
+```{r,fig.height=12,fig.width=10,fig.cap="Number of weekly hospital admissions"}
+
+ggplot(plot_data,aes(x=as.Date(calendar_week),n,group=group,linetype=group))+geom_line(size=1.2) + facet_wrap(vars(facility),nrow=5,ncol=1,scales='free')+
+  scale_x_date(NULL,date_labels = "%b %y", breaks = "month") + scale_y_continuous('Weekly admissions')+
+ g.theme
+```
+
+
+
+```{r,fig.height=10,fig.width=12,fig.cap="Number of weekly hospital admissions, at risk group only"}
+
+ggplot(filter(plot_data,group=='At risk'),aes(x=as.Date(calendar_week),n,group=facility,colour=facility))+geom_line(size=1.2) + 
+  scale_x_date(NULL,date_labels = "%b %y", breaks = "month") + scale_y_continuous('Weekly admissions',breaks=seq(0,700,50))+
+  scale_colour_manual(values = cbPalette)+
+ g.theme
+```
+
+### Length of stay
+
+```{r,fig.height=10,fig.width=10,fig.cap="Length of stay: Median (IQR); all admissions"}
+
+ggplot(plot_data,aes(x=as.Date(calendar_week),y=los_med,ymin=los_25,ymax=los_75,group=group,linetype=group))+geom_line(size=1.2) + geom_errorbar(width=.1)+ facet_wrap(vars(facility),nrow=5,ncol=1,scales='free')+
+  scale_x_date(NULL,date_labels = "%b %y", breaks = "month") + scale_y_continuous('Length of stay, days')+
+ g.theme
+```
+
+```{r,fig.height=10,fig.width=10,fig.cap="Length of stay: Median (IQR); admissions from 01-01-2020"}
+
+ggplot(filter(plot_data,calendar_week>"2020-01-01"),aes(x=as.Date(calendar_week),y=los_med,ymin=los_25,ymax=los_75,group=group,linetype=group))+geom_line(size=1.2) + geom_errorbar(width=.1)+ facet_wrap(vars(facility),nrow=5,ncol=1,scales='free')+
+  scale_x_date(NULL,date_labels = "%b %y", breaks = "month") + scale_y_continuous('Length of stay, days')+
+ g.theme
+```
+
+```{r,fig.height=10,fig.width=10,fig.cap="Length of stay: Median (IQR); admissions from 01-01-2020 for At risk group only"}
+
+ggplot(filter(plot_data,calendar_week>="2020-01-01",group=='At risk'),aes(x=as.Date(calendar_week),y=los_med,ymin=los_25,ymax=los_75,group=facility,colour=facility))+geom_crossbar()+facet_wrap(vars(facility),nrow=5,ncol=1,scales='free')+
+  scale_x_date(NULL,date_labels = "%b %y", breaks = "month") + scale_y_continuous('Length of stay, days')+
+    scale_colour_manual(values = cbPalette)+
+ g.theme
+
+```
+
+```{r,fig.height=10,fig.width=10,fig.cap="Length of stay: Median (IQR); admissions from 01-01-2020 for Comparator group only"}
+
+ggplot(filter(plot_data,calendar_week>="2020-01-01",group=='Comparator'),aes(x=as.Date(calendar_week),y=los_med,ymin=los_25,ymax=los_75,group=facility,colour=facility))+geom_crossbar()+facet_wrap(vars(facility),nrow=5,ncol=1,scales='free')+
+  scale_x_date(NULL,date_labels = "%b %y", breaks = "month") + scale_y_continuous('Length of stay, days')+
+    scale_colour_manual(values = cbPalette)+
+ g.theme
+
+```
+
+
+## To-do
+
+* Exclude admissions <=24 hours
+* Redefine length of stay from when a patient gets assigned/transferred to the study team. Check against the transfer data to see when that . Requires information on clinical teams from ward location if cohort_admit.tfr.xlsx

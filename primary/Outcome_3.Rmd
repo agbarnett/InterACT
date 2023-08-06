@@ -1,0 +1,139 @@
+---
+title: 'Outcome 3: Time to hospital re-admission'
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,cache = TRUE,dev="png",res=300)
+```
+
+```{r, warnings=FALSE}
+# Outcome 3: The time in days to re-admission to any Queensland public hospital for re-admissions within 12 weeks from the date of discharge.
+
+source('99_packages.R')
+load('analysis_ready/trial_outcomes_data.rda')
+
+
+FitFlextableToPage <- function(ft, pgwidth = 6){
+
+  ft_out <- ft %>% autofit()
+
+  ft_out <- width(ft_out, width = dim(ft_out)$widths*pgwidth /(flextable_dim(ft_out)$widths))
+  return(ft_out)
+}
+
+#Per protocol analysis: cox proportinal hazards model between usual care and intervention exposure
+#outcome is time to re-admission in days within 12 weeks after index discharge
+
+# Asusmptions
+#in the current data, index discharge has been defined at the first discharge alive from hospital after first recorded as high-risk CriSTAL or SPICT-positive
+#readmission must be to a Qld public hospital. re-admissions to private hospitals have been censored (readmit_fclty_name= "Private")
+#patients who died after leaving hospital or who were not re-admitted within the 12 week timeframe are censored
+#clinical team included as strata
+dat = cristal_spict_admission_info
+
+```
+
+```{r}
+### General data prep ###
+#NOTE: intervention establishment phase excluded (CONFIRM)
+# filter to final_disposition = "Discharged alive"
+# readmission must be within 12 weeks of discharge to a Qld public hospital (already accounted for in 2_add_readmissions
+# use time and event variable format
+
+
+
+dat_analysis = filter(dat,fclty_outcome!='Died in hospital') %>% mutate(status = readmit_flag_c,
+                      start = 0,
+                      #censor at death if no readmission; if no death or readmissins, stop = censor_day
+                      #checked discharge_to_death_days<discharge_to_readmit_days (n=3, died at readmission)
+                      stop = discharge_to_readmit_days_c, 
+                      #covariates 
+                      intervention = case_when(study_period=='Usual care'~0,study_period=='Intervention exposure'~1)) %>%
+  #select variables of interest
+  select(study_id,start,stop,status,clinical_team_fclty,intervention)
+
+```
+
+
+This document summarises per-protocol analysis for outcome 3:  The time in days to re-admission to any Queensland public hospital for re-admissions within 12 weeks from the date of discharge.. Data were analysed on `r Sys.Date()`. Results may change based on responses to the following queries:
+
+* The current analysis ignores admissions to private facilities when calculating the time to re-admission. Is this appropriate or should re-admission to private facilities be treated as a competing event (as a sensitivity analysis)
+
+
+## Definitions
+
+Re-admission was defined as the start of a new public hospital encounter, occurring within 12 weeks of discharge, for the preceding encounter.
+
+**NOTE** Re-admissions to private hospitals were skipped. For example, if a patient was re-admitted to a private hospital 2 weeks after discharge, then re-admitted to a public hospital 5 weeks after discharge, the defined time to re-admission was 5 weeks.
+
+
+# Per protocol analysis
+
+**From protocol paper** We will use a proportional hazards survival model to investigate the difference between usual care and intervention exposure phases in the time to re-admission within the first 12 weeks after index discharge (outcome 3). Patients who died after leaving hospital or were not re-admitted within the 12 weeks will be censored. Clinical teams will be included as strata.
+
+```{r echo=T}
+# Covariates: intervention (binary; 0=usual care, 1=intervention exposure); intervention establishment excluded
+# Strata: clinical_team_fclty
+#coxph
+mod.coxph <- coxph(Surv(stop, status) ~ intervention + strata(clinical_team_fclty), data=dat_analysis,id=study_id)
+```
+
+```{r}
+#summary table
+ftab = data.frame(summary(mod.coxph)$conf.int) %>% rownames_to_column(var='term')
+ftab$p = summary(mod.coxph)$coefficient[,'Pr(>|z|)'] 
+
+ftab = ftab %>% mutate(p = ifelse(p<0.001,'<0.001',round(p,3))) %>% 
+  mutate(Parameter = 'Intervention exposure',
+         'Hazard ratio' = round(exp.coef.,2),
+         '95% CI' = paste(round(lower..95,2),'to',round(upper..95,2))) %>% rename('p-value'=p) %>%
+  select(Parameter,`Hazard ratio`,`95% CI`,`p-value`)
+
+ftab %>% flextable() %>% theme_box() %>%  FitFlextableToPage()
+
+```
+
+## Cumulative incidence functions, adjusted for clinical team as strata
+
+```{r, echo=T}
+dat_analysis = dat_analysis %>% mutate(trial_phase = ifelse(intervention==1,'Intervention_exposure','Usual_care'))
+
+cuminc_fit =  with(dat_analysis,cuminc(ftime=stop, fstatus=status, group=trial_phase,
+                              strata=clinical_team_fclty, cencode=0, na.action=na.omit))
+
+```
+
+```{r,fig.height=8,fig.width=10,fig.cap = 'Cumulative incidence functions for re-admission to any Qld public hospital within 12 weeks of index discharge. Results are stratified by trial phase and adjusted by clinical team as strata'}
+g = ggcompetingrisks(cuminc_fit,
+                     xlab = 'Days since index discharge',
+                     ylab = 'Probability in state',
+                     xlim = c(0,84), #
+                     title = '',
+                     legend.title='',
+                     multiple_panels = F,
+                     risk.table = TRUE,
+                     conf.int = TRUE) + 
+  scale_y_continuous(breaks=seq(0,1,0.1))+scale_x_continuous(breaks=seq(0,84,7))+
+  theme_bw() + theme(strip.background = element_rect(fill='white'),
+                     strip.text = element_text(size = 12),
+                     axis.text = element_text(size=12),
+                     axis.text.x = element_text(size=12),
+                     axis.text.y = element_text(size=12),
+                     legend.position = 'top',legend.direction = 'horizontal')
+
+
+g$data %>% ggplot(aes(x=time,y=est,colour=group,fill=group,ymin=est-1.96*std,ymax=est+1.96*std))+
+  geom_step(size=1)+geom_ribbon(alpha=.2)+
+  scale_y_continuous('Cumulative incidence',breaks=seq(0,1,0.1))+
+  scale_x_continuous('Days since index discharge',breaks=seq(0,84,7))+
+  theme_bw() + theme(strip.background = element_rect(fill='white'),
+                     strip.text = element_text(size = 12),
+                     axis.text = element_text(size=12),
+                     axis.text.x = element_text(size=12),
+                     axis.text.y = element_text(size=12),
+                     legend.position = 'top',legend.direction = 'horizontal',legend.title = element_blank())
