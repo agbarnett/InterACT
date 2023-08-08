@@ -1,6 +1,6 @@
 # Synthetic data
 
-We created a synthetic version of the data using the methods described in [Quintana](https://elifesciences.org/articles/53275). This was to avoid any risk of patients being identified.
+We created a synthetic version of the data using the [synthpop](https://www.jstatsoft.org/article/view/v074i11) package. This was to avoid any risk of patients being identified.
 
 These patient-level data used to examine the in-hospital outcomes of:
 
